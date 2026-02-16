@@ -122,7 +122,7 @@ To analyze arbitrary Rust functions, we need:
 
 ```bash
 # Build everything
-./build.sh  # or build.bat on Windows
+./scripts/build.sh  # or scripts/build.bat on Windows
 
 # Run thread escape examples (observe escaped threads)
 cd tests/rust

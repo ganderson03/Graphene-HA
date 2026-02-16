@@ -20,14 +20,14 @@ Escape Sentinel is a multi-language concurrency escape detector with a Rust orch
 **Linux/macOS:**
 
 ```bash
-chmod +x build.sh
-./build.sh
+chmod +x scripts/build.sh
+./scripts/build.sh
 ```
 
 **Windows:**
 
 ```powershell
-.\build.bat
+.\scripts\build.bat
 ```
 
 This will:

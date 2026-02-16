@@ -285,8 +285,8 @@ tests/                                # Test programs
   rust/                               # Rust test cases
   README.md                           # Test documentation
 
-build.sh                              # Linux/macOS build
-build.bat                             # Windows build
+scripts/build.sh                      # Linux/macOS build
+scripts/build.bat                     # Windows build
 pyproject.toml                        # Python package config
 MULTI_LANGUAGE_README.md              # Main documentation
 QUICKSTART.md                         # Quick start guide
