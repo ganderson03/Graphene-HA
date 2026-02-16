@@ -146,7 +146,6 @@ fn analyze_function(
 
             brace_depth += count_braces(line);
             if brace_depth <= 0 {
-                in_target = false;
                 break;
             }
         }

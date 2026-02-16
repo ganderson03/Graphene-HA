@@ -7,7 +7,7 @@ use crate::protocol::{
 use crate::static_analyzer::StaticEscapeAnalyzer;
 use anyhow::{Result, Context};
 use std::process::Command;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 
 pub struct NodeJsStaticAnalyzer;
 

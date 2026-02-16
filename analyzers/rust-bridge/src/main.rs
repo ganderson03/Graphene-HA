@@ -1,10 +1,7 @@
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
 use std::io::{self, Read};
-use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
-use tokio::runtime::Runtime;
 
 // Protocol structures matching the common protocol
 #[derive(Debug, Deserialize)]
@@ -42,7 +39,7 @@ struct ExecutionResult {
     escape_details: EscapeDetails,
 }
 
-#[derive(Debug, Serialize, Default)]
+#[derive(Debug, Serialize, Default, Clone)]
 struct EscapeDetails {
     threads: Vec<ThreadEscape>,
     processes: Vec<ProcessEscape>,
@@ -51,7 +48,7 @@ struct EscapeDetails {
     other: Vec<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Clone)]
 struct ThreadEscape {
     thread_id: String,
     name: String,
@@ -60,21 +57,21 @@ struct ThreadEscape {
     stack_trace: Option<Vec<String>>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Clone)]
 struct ProcessEscape {
     pid: u32,
     name: String,
     cmdline: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Clone)]
 struct AsyncTaskEscape {
     task_id: String,
     task_type: String,
     state: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Clone)]
 struct GoroutineEscape {
     goroutine_id: u64,
     state: String,
@@ -99,15 +96,6 @@ struct ExecutionSummary {
     escapes: usize,
     genuine_escapes: usize,
     crash_rate: f64,
-}
-
-// Thread tracking
-static THREAD_COUNTER: Mutex<Option<Arc<Mutex<HashSet<thread::ThreadId>>>>> = Mutex::new(None);
-
-fn get_active_threads() -> HashSet<thread::ThreadId> {
-    // This is a simplified version - Rust doesn't provide easy enumeration of all threads
-    // In a real implementation, you'd need to track threads manually or use platform-specific APIs
-    HashSet::new()
 }
 
 fn execute_test(
@@ -183,6 +171,8 @@ fn execute_test(
 }
 
 fn analyze(request: AnalyzeRequest) -> AnalyzeResponse {
+    let _ = (&request.target, &request.options);
+
     let mut response = AnalyzeResponse {
         session_id: request.session_id,
         language: "rust".to_string(),

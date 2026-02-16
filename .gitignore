@@ -15,6 +15,9 @@ pom.xml.releaseBackup
 pom.xml.versionsBackup
 pom.xml.next
 release.properties
+.gradle/
+build/
+*.class
 
 # Node.js
 node_modules/
@@ -22,6 +25,10 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 package-lock.json
+dist/
+.eslintcache
+.node-version
+.npmrc
 
 # Go
 *.exe
@@ -32,6 +39,7 @@ package-lock.json
 *.test
 *.out
 go.sum
+vendor/
 /analyzers/go-bridge/escape-analyzer
 /analyzers/go-bridge/escape-analyzer.exe
 
@@ -57,6 +65,15 @@ wheels/
 .installed.cfg
 *.egg
 MANIFEST
+.pytest_cache/
+.tox/
+.coverage
+.coverage.*
+htmlcov/
+*.cover
+.mypy_cache/
+.dmypy.json
+dmypy.json
 
 # IDEs
 .vscode/
@@ -64,7 +81,6 @@ MANIFEST
 *.swp
 *.swo
 *~
-.DS_Store
 
 # Logs
 logs/
@@ -78,3 +94,9 @@ venv/
 ENV/
 env.bak/
 venv.bak/
+
+# OS & Temporary
+.DS_Store
+Thumbs.db
+*.tmp
+.cache/

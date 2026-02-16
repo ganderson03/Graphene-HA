@@ -40,9 +40,10 @@ pub fn use_scoped_threads(input: String) -> String {
     thread::scope(|s| {
         let handles: Vec<_> = (0..3)
             .map(|i| {
+                let input_clone = input.clone();
                 s.spawn(move || {
                     thread::sleep(Duration::from_millis(50));
-                    format!("Scoped {}: {}", i, input.clone())
+                    format!("Scoped {}: {}", i, input_clone)
                 })
             })
             .collect();
@@ -173,8 +174,8 @@ pub fn use_raii_thread_guard(input: String) -> String {
         format!("Guarded: {}", input)
     });
     
-    let guard = ThreadGuard(Some(handle));
+    let mut guard = ThreadGuard(Some(handle));
     
     // Guard ensures thread is joined even if we panic or return early
-    guard.0.unwrap().join().unwrap()
+    guard.0.take().unwrap().join().unwrap()
 }

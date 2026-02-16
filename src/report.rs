@@ -1,7 +1,7 @@
 use anyhow::Result;
 use std::path::PathBuf;
 use chrono::Local;
-use crate::protocol::{AnalyzeResponse, Vulnerability, AnalysisMode};
+use crate::protocol::{AnalyzeResponse, Vulnerability};
 
 pub struct ReportGenerator {
     output_dir: PathBuf,
@@ -198,6 +198,10 @@ impl ReportGenerator {
     }
 
     fn format_escape_details(&self, details: &crate::protocol::EscapeDetails) -> String {
+        if details.is_empty() {
+            return "No escape details available".to_string();
+        }
+
         let mut output = String::new();
 
         if !details.threads.is_empty() {
@@ -232,10 +236,6 @@ impl ReportGenerator {
             for gr in &details.goroutines {
                 output.push_str(&format!("- #{}: {} ({})\n", gr.goroutine_id, gr.function, gr.state));
             }
-        }
-
-        if output.is_empty() {
-            output.push_str("No escape details available");
         }
 
         output

@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use anyhow::{Result, Context};
 use std::process::Stdio;
 use tokio::process::Command;
-use tokio::io::{AsyncWriteExt, AsyncReadExt};
+use tokio::io::AsyncWriteExt;
 use crate::analyzer::Analyzer;
 use crate::protocol::*;
 

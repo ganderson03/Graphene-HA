@@ -1,10 +1,7 @@
 /// Static escape analysis module
 /// Performs compile-time analysis to detect escaping variables and concurrency patterns
 
-use crate::protocol::{
-    StaticAnalysisResult, StaticEscape, StaticEscapeSummary, EscapeType, 
-    SourceLocation, ConfidenceLevel
-};
+use crate::protocol::StaticAnalysisResult;
 use anyhow::Result;
 
 /// Trait for language-specific static analyzers

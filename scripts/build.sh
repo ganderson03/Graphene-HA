@@ -31,7 +31,7 @@ echo "📦 Setting up Node.js analyzer bridge..."
 if command -v node &> /dev/null; then
     cd analyzers/nodejs-bridge
     npm install --silent
-    chmod +x analyzer.js
+    chmod +x analyzer_bridge.js
     cd ../..
     echo "✅ Node.js bridge ready"
 else
@@ -63,7 +63,7 @@ echo ""
 echo "🧪 Building Rust test examples..."
 cd tests/rust
 cargo build --release --examples
-cd ..
+cd ../..
 echo "✅ Rust test examples built"
 echo ""
 

@@ -1,12 +1,10 @@
 package main
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
 	"os"
-	"plugin"
 	"runtime"
 	"time"
 )
@@ -22,32 +20,32 @@ type AnalyzeRequest struct {
 }
 
 type AnalyzeResponse struct {
-	SessionID       string              `json:"session_id"`
-	Language        string              `json:"language"`
-	AnalyzerVersion string              `json:"analyzer_version"`
-	Results         []ExecutionResult   `json:"results"`
-	Vulnerabilities []Vulnerability     `json:"vulnerabilities"`
-	Summary         ExecutionSummary    `json:"summary"`
-	Error           string              `json:"error,omitempty"`
+	SessionID       string            `json:"session_id"`
+	Language        string            `json:"language"`
+	AnalyzerVersion string            `json:"analyzer_version"`
+	Results         []ExecutionResult `json:"results"`
+	Vulnerabilities []Vulnerability   `json:"vulnerabilities"`
+	Summary         ExecutionSummary  `json:"summary"`
+	Error           string            `json:"error,omitempty"`
 }
 
 type ExecutionResult struct {
-	InputData        string        `json:"input_data"`
-	Success          bool          `json:"success"`
-	Crashed          bool          `json:"crashed"`
-	Output           string        `json:"output"`
-	Error            string        `json:"error"`
-	ExecutionTimeMs  int64         `json:"execution_time_ms"`
-	EscapeDetected   bool          `json:"escape_detected"`
-	EscapeDetails    EscapeDetails `json:"escape_details"`
+	InputData       string        `json:"input_data"`
+	Success         bool          `json:"success"`
+	Crashed         bool          `json:"crashed"`
+	Output          string        `json:"output"`
+	Error           string        `json:"error"`
+	ExecutionTimeMs int64         `json:"execution_time_ms"`
+	EscapeDetected  bool          `json:"escape_detected"`
+	EscapeDetails   EscapeDetails `json:"escape_details"`
 }
 
 type EscapeDetails struct {
-	Threads    []ThreadEscape     `json:"threads"`
-	Processes  []ProcessEscape    `json:"processes"`
-	AsyncTasks []AsyncTaskEscape  `json:"async_tasks"`
-	Goroutines []GoroutineEscape  `json:"goroutines"`
-	Other      []string           `json:"other"`
+	Threads    []ThreadEscape    `json:"threads"`
+	Processes  []ProcessEscape   `json:"processes"`
+	AsyncTasks []AsyncTaskEscape `json:"async_tasks"`
+	Goroutines []GoroutineEscape `json:"goroutines"`
+	Other      []string          `json:"other"`
 }
 
 type ThreadEscape struct {
@@ -85,13 +83,13 @@ type Vulnerability struct {
 }
 
 type ExecutionSummary struct {
-	TotalTests      int     `json:"total_tests"`
-	Successes       int     `json:"successes"`
-	Crashes         int     `json:"crashes"`
-	Timeouts        int     `json:"timeouts"`
-	Escapes         int     `json:"escapes"`
-	GenuineEscapes  int     `json:"genuine_escapes"`
-	CrashRate       float64 `json:"crash_rate"`
+	TotalTests     int     `json:"total_tests"`
+	Successes      int     `json:"successes"`
+	Crashes        int     `json:"crashes"`
+	Timeouts       int     `json:"timeouts"`
+	Escapes        int     `json:"escapes"`
+	GenuineEscapes int     `json:"genuine_escapes"`
+	CrashRate      float64 `json:"crash_rate"`
 }
 
 func main() {
@@ -185,7 +183,7 @@ func analyze(request AnalyzeRequest) AnalyzeResponse {
 	return response
 }
 
-func loadTargetFunction(target string) (func(string) string, error) {
+func loadTargetFunction(_ string) (func(string) string, error) {
 	// For Go, we need to load a plugin
 	// Format: file.so:FunctionName
 	// Note: Go plugins only work on Linux/macOS

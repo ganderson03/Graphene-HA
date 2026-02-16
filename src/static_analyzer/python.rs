@@ -7,7 +7,7 @@ use crate::protocol::{
 use crate::static_analyzer::StaticEscapeAnalyzer;
 use anyhow::{Result, Context};
 use std::process::Command;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 
 pub struct PythonStaticAnalyzer;
 
@@ -22,7 +22,7 @@ impl StaticEscapeAnalyzer for PythonStaticAnalyzer {
         let start_time = std::time::Instant::now();
         
         // Parse target to extract module and function
-        let (module, function) = parse_target(target)?;
+        let (_module, function) = parse_target(target)?;
         
         // Run Python AST analyzer
         let escapes = self.analyze_python_ast(source_file, &function)?;

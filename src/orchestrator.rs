@@ -2,9 +2,9 @@ use anyhow::{Result, Context};
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
 use crate::analyzer::AnalyzerRegistry;
-use crate::protocol::{AnalyzeRequest, AnalyzeResponse, AnalysisMode, StaticAnalysisResult, ExecutionResult, ExecutionSummary};
+use crate::protocol::{AnalyzeRequest, AnalyzeResponse, AnalysisMode, ExecutionSummary};
 use crate::report::ReportGenerator;
-use crate::static_analyzer::{StaticAnalyzerFactory, StaticEscapeAnalyzer};
+use crate::static_analyzer::StaticAnalyzerFactory;
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use tracing::{info, warn, error};
@@ -84,6 +84,8 @@ async fn run_static_analysis(
     // Create static analyzer
     let static_analyzer = StaticAnalyzerFactory::create(&lang)
         .ok_or_else(|| anyhow::anyhow!("No static analyzer available for language: {}", lang))?;
+
+    info!("Using static analyzer: {}", static_analyzer.language());
     
     if !static_analyzer.is_available() {
         anyhow::bail!("Static analyzer for {} is not available (missing tools)", lang);

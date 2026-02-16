@@ -270,6 +270,7 @@ pub struct AnalyzerInfo {
 
 /// Health check for analyzer
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[allow(dead_code)]
 pub struct HealthCheckRequest {
     pub ping: String,
 }
