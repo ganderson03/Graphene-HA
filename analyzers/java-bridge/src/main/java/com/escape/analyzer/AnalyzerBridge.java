@@ -154,15 +154,31 @@ public class AnalyzerBridge {
 
         // Capture baseline thread state
         ThreadMXBean threadMXBean = ManagementFactory.getThreadMXBean();
-        Set<Long> baselineThreadIds = getAllThreadIds(threadMXBean);
+        Map<Long, ThreadInfo> baselineThreads = getAllThreadInfo(threadMXBean);
 
         long startTime = System.currentTimeMillis();
 
         try {
-            // Invoke method
-            Object returnValue = method.invoke(null, input);
-            result.output = String.valueOf(returnValue);
-            result.success = true;
+            // Invoke method in a timeout-aware manner
+            Thread testThread = new Thread(() -> {
+                try {
+                    Object returnValue = method.invoke(null, input);
+                    result.output = String.valueOf(returnValue);
+                    result.success = true;
+                } catch (Exception e) {
+                    result.crashed = true;
+                    result.error = e.getClass().getSimpleName() + ": " + e.getMessage();
+                }
+            });
+            testThread.setDaemon(false);
+            testThread.start();
+
+            // Wait with timeout
+            testThread.join((long)(timeoutSeconds * 1000));
+            if (testThread.isAlive()) {
+                result.crashed = true;
+                result.error = "Timeout exceeded";
+            }
 
         } catch (Exception e) {
             result.crashed = true;
@@ -172,17 +188,14 @@ public class AnalyzerBridge {
         long executionTime = System.currentTimeMillis() - startTime;
         result.executionTimeMs = executionTime;
 
-        // Wait a bit for async operations to settle
+        // Wait for async operations to settle
         try {
             Thread.sleep(100);
         } catch (InterruptedException ignored) {
         }
 
-        // Check for escaped threads
-        Set<Long> currentThreadIds = getAllThreadIds(threadMXBean);
-        Set<Long> escapedThreadIds = new HashSet<>(currentThreadIds);
-        escapedThreadIds.removeAll(baselineThreadIds);
-
+        // Check for escaped threads (with detailed info)
+        Map<Long, ThreadInfo> currentThreads = getAllThreadInfo(threadMXBean);
         EscapeDetails escapeDetails = new EscapeDetails();
         escapeDetails.threads = new ArrayList<>();
         escapeDetails.processes = new ArrayList<>();
@@ -190,16 +203,44 @@ public class AnalyzerBridge {
         escapeDetails.goroutines = new ArrayList<>();
         escapeDetails.other = new ArrayList<>();
 
-        for (Long threadId : escapedThreadIds) {
-            ThreadInfo info = threadMXBean.getThreadInfo(threadId);
-            if (info != null) {
-                ThreadEscape threadEscape = new ThreadEscape();
-                threadEscape.threadId = String.valueOf(threadId);
-                threadEscape.name = info.getThreadName();
-                threadEscape.isDaemon = info.isDaemon();
-                threadEscape.state = info.getThreadState().toString();
-                threadEscape.stackTrace = null; // Could add if needed
-                escapeDetails.threads.add(threadEscape);
+        // Detect new threads (excluding system/JVM threads)
+        Set<String> systemPrefixes = new HashSet<>(Arrays.asList(
+            "ForkJoinPool", "Common-ForkJoin", "Attach Listener", "Service Thread",
+            "Reference Handler", "Finalizer", "Signal Dispatcher", "Sweeper thread",
+            "AWT", "AppKit", "GC task thread"
+        ));
+
+        for (Long threadId : currentThreads.keySet()) {
+            if (!baselineThreads.containsKey(threadId)) {
+                ThreadInfo info = currentThreads.get(threadId);
+                if (info != null && !isSystemThread(info, systemPrefixes)) {
+                    ThreadEscape threadEscape = new ThreadEscape();
+                    threadEscape.threadId = String.valueOf(threadId);
+                    threadEscape.name = info.getThreadName();
+                    threadEscape.isDaemon = info.isDaemon();
+                    threadEscape.state = info.getThreadState().toString();
+
+                    // Capture stack trace for escaped threads
+                    StackTraceElement[] stackTrace = info.getStackTrace();
+                    threadEscape.stackTrace = new ArrayList<>();
+                    for (StackTraceElement element : stackTrace) {
+                        threadEscape.stackTrace.add(element.toString());
+                    }
+
+                    escapeDetails.threads.add(threadEscape);
+                }
+            }
+        }
+
+        // Check if any threads changed state from running to blocked (potential deadlock)
+        for (Long threadId : baselineThreads.keySet()) {
+            if (currentThreads.containsKey(threadId)) {
+                ThreadInfo baseline = baselineThreads.get(threadId);
+                ThreadInfo current = currentThreads.get(threadId);
+                if (baseline.getThreadState() != current.getThreadState() &&
+                    current.getThreadState().toString().equals("BLOCKED")) {
+                    escapeDetails.other.add("thread_blocked:" + baseline.getThreadName() + ":" + threadId);
+                }
             }
         }
 
@@ -209,14 +250,27 @@ public class AnalyzerBridge {
         return result;
     }
 
-    private static Set<Long> getAllThreadIds(ThreadMXBean threadMXBean) {
-        long[] ids = threadMXBean.getAllThreadIds();
-        Set<Long> set = new HashSet<>();
-        for (long id : ids) {
-            set.add(id);
+    private static boolean isSystemThread(ThreadInfo info, Set<String> systemPrefixes) {
+        String name = info.getThreadName();
+        for (String prefix : systemPrefixes) {
+            if (name.startsWith(prefix)) return true;
         }
-        return set;
+        return false;
     }
+
+    private static Map<Long, ThreadInfo> getAllThreadInfo(ThreadMXBean threadMXBean) {
+        Map<Long, ThreadInfo> threads = new HashMap<>();
+        long[] ids = threadMXBean.getAllThreadIds();
+        ThreadInfo[] infos = threadMXBean.getThreadInfo(ids, Integer.MAX_VALUE);
+        for (ThreadInfo info : infos) {
+            if (info != null) {
+                threads.put(info.getThreadId(), info);
+            }
+        }
+        return threads;
+    }
+
+
 
     // Protocol classes (matching Rust protocol)
     static class AnalyzeRequest {

@@ -3,6 +3,8 @@ import pickle
 import queue
 import time
 import multiprocessing
+import asyncio
+import sys
 from dataclasses import dataclass
 
 @dataclass
@@ -17,16 +19,34 @@ class TestResult:
  escape_detected:bool=False
  escape_details:str=""
 
-def _collect_escape_details(baseline_thread_ids,baseline_children):
+def _collect_escape_details(baseline_thread_ids, baseline_children):
  import threading
  import multiprocessing as mp
- current_threads=threading.enumerate()
- current_thread_ids={thr.ident for thr in current_threads}
- escape_thread_ids=current_thread_ids-baseline_thread_ids
- escape_threads=[thr for thr in current_threads if thr.ident in escape_thread_ids and thr.is_alive()]
- escape_details=[f"thread:{thr.name}:{'daemon' if thr.daemon else 'nondaemon'}" for thr in escape_threads]
+ 
+ current_threads = threading.enumerate()
+ current_thread_ids = {thr.ident for thr in current_threads}
+ escape_thread_ids = current_thread_ids - baseline_thread_ids
+ escape_threads = [thr for thr in current_threads if thr.ident in escape_thread_ids and thr.is_alive()]
+ escape_details = [f"thread:{thr.name}:{'daemon' if thr.daemon else 'nondaemon'}" for thr in escape_threads]
  escape_details.extend(f"process:{child.pid}" for child in mp.active_children() if child.pid not in baseline_children)
- return bool(escape_details),";".join(escape_details)
+ 
+ # Detect asyncio task escapes
+ try:
+  if sys.version_info >= (3, 7):
+   try:
+    loop = asyncio.get_running_loop()
+    all_tasks = asyncio.all_tasks(loop)
+    pending_tasks = [task for task in all_tasks if not task.done()]
+    for task in pending_tasks:
+     coro = task.get_coro()
+     escape_details.append(f"asyncio_task:{coro.__name__}:pending")
+   except RuntimeError:
+    # No running event loop, check for unrunning tasks
+    pass
+ except Exception:
+  pass
+ 
+ return bool(escape_details), ";".join(escape_details)
 
 def _function_worker(func,input_data,fixed_kwargs,result_queue):
  import threading

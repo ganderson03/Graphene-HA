@@ -1,11 +1,15 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
 	"os"
+	"regexp"
 	"runtime"
+	"strconv"
+	"strings"
 	"time"
 )
 
@@ -207,8 +211,10 @@ func executeTest(targetFunc func(string) string, input string, timeoutSeconds fl
 		},
 	}
 
-	// Capture baseline goroutine count
-	baselineGoroutines := runtime.NumGoroutine()
+	// Capture baseline goroutine count and stack traces
+	baselineStackBuf := make([]byte, 1024*1024)
+	baselineStackLen := runtime.Stack(baselineStackBuf, true)
+	baselineGoroutineIDs := parseGoroutineIDs(baselineStackBuf[:baselineStackLen])
 
 	startTime := time.Now()
 	done := make(chan struct{})
@@ -250,23 +256,61 @@ func executeTest(targetFunc func(string) string, input string, timeoutSeconds fl
 	// Wait a bit for goroutines to finish
 	time.Sleep(100 * time.Millisecond)
 
-	// Check for escaped goroutines
-	currentGoroutines := runtime.NumGoroutine()
-	escapedCount := currentGoroutines - baselineGoroutines
+	// Check for escaped goroutines with detailed identification
+	currentStackBuf := make([]byte, 1024*1024)
+	currentStackLen := runtime.Stack(currentStackBuf, true)
+	currentGoroutineIDs := parseGoroutineIDs(currentStackBuf[:currentStackLen])
 
-	if escapedCount > 0 {
-		result.EscapeDetected = true
-		// Add escaped goroutines (we can't get individual goroutine info easily in Go)
-		for i := 0; i < escapedCount; i++ {
-			result.EscapeDetails.Goroutines = append(result.EscapeDetails.Goroutines, GoroutineEscape{
-				GoroutineID: uint64(baselineGoroutines + i + 1),
-				State:       "running",
-				Function:    "unknown",
+	// Find new goroutines
+	escapedGoroutines := make([]GoroutineEscape, 0)
+	for gid, info := range currentGoroutineIDs {
+		if _, exists := baselineGoroutineIDs[gid]; !exists {
+			escapedGoroutines = append(escapedGoroutines, GoroutineEscape{
+				GoroutineID: gid,
+				State:       info["state"],
+				Function:    info["function"],
 			})
 		}
 	}
 
+	if len(escapedGoroutines) > 0 {
+		result.EscapeDetected = true
+		result.EscapeDetails.Goroutines = escapedGoroutines
+	}
+
 	return result
+}
+
+// parseGoroutineIDs extracts goroutine IDs and function names from stack traces
+func parseGoroutineIDs(stackData []byte) map[uint64]map[string]string {
+	goroutines := make(map[uint64]map[string]string)
+	
+	lines := bytes.Split(stackData, []byte("\n"))
+	goroutineIDRegex := regexp.MustCompile(`goroutine (\d+) \[(.+?)\]`)
+	
+	for i := 0; i < len(lines); i++ {
+		line := string(lines[i])
+		if matches := goroutineIDRegex.FindStringSubmatch(line); matches != nil {
+			gid, _ := strconv.ParseUint(matches[1], 10, 64)
+			state := matches[2]
+			
+			// Extract function from next line
+			function := "unknown"
+			if i+1 < len(lines) {
+				nextLine := string(lines[i+1])
+				if parts := strings.Fields(nextLine); len(parts) > 0 {
+					function = strings.TrimSpace(parts[0])
+				}
+			}
+			
+			goroutines[gid] = map[string]string{
+				"state":    state,
+				"function": function,
+			}
+		}
+	}
+	
+	return goroutines
 }
 
 func errorResponse(message string) {

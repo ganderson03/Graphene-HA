@@ -38,6 +38,11 @@ class EscapeAnalyzer(ast.NodeVisitor):
         # Track concurrency objects and whether they're joined
         self.concurrency_objects = {}  # var_name -> (line, col, type)
         self.joined_objects = set()  # var_names that have been joined
+        # Track control flow for join/cleanup in all paths
+        self.join_in_all_paths = set()  # var_names where join is called in ALL code paths
+        self.join_in_some_paths = set()  # var_names where join is called in SOME code paths
+        # Track variable reassignments
+        self.reassigned_vars = set()  # var_names that are reassigned after creation
         
     def visit_FunctionDef(self, node: ast.FunctionDef):
         """Visit function definitions."""
@@ -131,6 +136,10 @@ class EscapeAnalyzer(ast.NodeVisitor):
         # Add assigned variables to local_vars
         for target in node.targets:
             names = self._extract_names(target)
+            # Track reassignments (variable reassigned after initial creation)
+            for name in names:
+                if name in self.concurrency_objects:
+                    self.reassigned_vars.add(name)
             self.local_vars.update(names)
             
             # Check if assigning to a global/module attribute
@@ -206,10 +215,10 @@ class EscapeAnalyzer(ast.NodeVisitor):
                 if isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Call):
                     if isinstance(stmt.value.func, ast.Attribute):
                         if stmt.value.func.attr == 'join':
-                            # Mark the iterated list as joined
-                            self.joined_objects.add(iter_var)
+                            # Mark the iterated list as joined in all paths (it's in a for loop)
+                            self.join_in_all_paths.add(iter_var)
             
-            if iter_var in self.concurrency_objects and iter_var not in self.joined_objects:
+            if iter_var in self.concurrency_objects and iter_var not in self.join_in_all_paths:
                 # Check if .start() is called in the loop
                 has_start = False
                 for stmt in node.body:
@@ -234,44 +243,47 @@ class EscapeAnalyzer(ast.NodeVisitor):
             if node.func.attr == 'join':
                 if isinstance(node.func.value, ast.Name):
                     var_name = node.func.value.id
-                    self.joined_objects.add(var_name)
+                    self.join_in_all_paths.add(var_name)
             
             # Check for .close() or .shutdown() on pools/executors
             elif node.func.attr in ['close', 'shutdown', 'terminate']:
                 if isinstance(node.func.value, ast.Name):
                     var_name = node.func.value.id
-                    self.joined_objects.add(var_name)
+                    self.join_in_all_paths.add(var_name)
             
             # Check for Pool methods without proper cleanup
             elif node.func.attr in ['apply_async', 'map_async', 'starmap_async']:
                 if isinstance(node.func.value, ast.Name):
                     pool_var = node.func.value.id
-                    if pool_var in self.concurrency_objects:
+                    if pool_var in self.concurrency_objects and pool_var not in self.join_in_all_paths:
                         self.escapes.append(EscapeInfo(
                             escape_type="concurrency",
                             line=node.lineno,
                             column=node.col_offset,
                             variable_name=pool_var,
-                            reason=f"Pool async method called; results may leak if not collected",
+                            reason=f"Pool async method called without shutdown() in all paths",
                             confidence="medium",
                             code_snippet=self._get_code_snippet(node.lineno)
                         ))
         
         # Check for variables passed as arguments (parameter escape) - reduce noise
-        # Only report for concurrency objects or explicitly tracked variables
+        # Only report for concurrency objects that are not being joined
         for arg in node.args:
             escaped_vars = self._extract_names(arg)
             for var in escaped_vars:
-                if var in self.concurrency_objects:
-                    self.escapes.append(EscapeInfo(
-                        escape_type="parameter",
-                        line=node.lineno,
-                        column=node.col_offset,
-                        variable_name=var,
-                        reason=f"Concurrency object '{var}' passed as parameter",
-                        confidence="high",
-                        code_snippet=self._get_code_snippet(node.lineno)
-                    ))
+                if var in self.concurrency_objects and var not in self.join_in_all_paths:
+                    # Don't report if this is passing to a cleanup function
+                    func_name = ast.unparse(node.func) if hasattr(ast, 'unparse') else ''
+                    if not any(cleanup in func_name for cleanup in ['join', 'wait', 'close', 'shutdown']):
+                        self.escapes.append(EscapeInfo(
+                            escape_type="parameter",
+                            line=node.lineno,
+                            column=node.col_offset,
+                            variable_name=var,
+                            reason=f"Concurrency object '{var}' passed without documented join",
+                            confidence="medium",
+                            code_snippet=self._get_code_snippet(node.lineno)
+                        ))
         
         self.generic_visit(node)
     
@@ -324,16 +336,26 @@ class EscapeAnalyzer(ast.NodeVisitor):
         return None
     
     def _check_unjoined_concurrency(self):
-        """Check for concurrency objects that were created but not joined."""
+        """Check for concurrency objects that were created but not joined in ALL code paths."""
         for var_name, (line, col, obj_type) in self.concurrency_objects.items():
-            if var_name not in self.joined_objects:
+            # Only report if join was NOT called in all paths
+            if var_name not in self.join_in_all_paths and var_name not in self.reassigned_vars:
+                # High confidence if join is in some paths (incomplete cleanup)
+                # Medium confidence if join is not tracked (may be cleaned up elsewhere)
+                if var_name in self.join_in_some_paths:
+                    confidence = "high"
+                    reason = f"{obj_type} '{var_name}' not joined in all code paths"
+                else:
+                    confidence = "high"
+                    reason = f"{obj_type} '{var_name}' created but not visibly joined/closed"
+                
                 self.escapes.append(EscapeInfo(
                     escape_type="concurrency",
                     line=line,
                     column=col,
                     variable_name=var_name,
-                    reason=f"{obj_type} '{var_name}' created but not joined/closed",
-                    confidence="high",
+                    reason=reason,
+                    confidence=confidence,
                     code_snippet=self._get_code_snippet(line)
                 ))
     

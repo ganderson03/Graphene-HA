@@ -1,7 +1,85 @@
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::io::{self, Read};
 use std::thread;
 use std::time::{Duration, Instant};
+
+#[cfg(target_os = "linux")]
+use procfs::process::Process;
+
+#[cfg(target_os = "windows")]
+use winapi::um::processthreadsapi::GetCurrentProcessId;
+#[cfg(target_os = "windows")]
+use winapi::um::tlhelp32::{CreateToolhelp32Snapshot, Thread32First, Thread32Next, TH32CS_SNAPTHREAD, THREADENTRY32};
+#[cfg(target_os = "windows")]
+use winapi::shared::minwindef::FALSE;
+
+#[cfg(target_os = "macos")]
+use std::ffi::CStr;
+
+// Platform-specific thread enumeration functions
+#[cfg(target_os = "linux")]
+fn get_thread_ids() -> HashSet<u32> {
+    let mut threads = HashSet::new();
+    if let Ok(me) = Process::myself() {
+        if let Ok(task_status) = me.tasks() {
+            for task in task_status {
+                if let Ok(t) = task {
+                    threads.insert(t.tid as u32);
+                }
+            }
+        }
+    }
+    threads
+}
+
+#[cfg(target_os = "windows")]
+fn get_thread_ids() -> HashSet<u32> {
+    let mut threads = HashSet::new();
+    unsafe {
+        let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+        if snapshot as usize != usize::MAX {
+            let mut thread_entry: THREADENTRY32 = std::mem::zeroed();
+            thread_entry.dwSize = std::mem::size_of::<THREADENTRY32>() as u32;
+            
+            if Thread32First(snapshot, &mut thread_entry) != FALSE {
+                let current_pid = GetCurrentProcessId();
+                while thread_entry.th32OwnerProcessID == current_pid {
+                    threads.insert(thread_entry.th32ThreadID);
+                    if Thread32Next(snapshot, &mut thread_entry) == FALSE {
+                        break;
+                    }
+                }
+            }
+            
+            winapi::um::handleapi::CloseHandle(snapshot);
+        }
+    }
+    threads
+}
+
+#[cfg(target_os = "macos")]
+fn get_thread_ids() -> HashSet<u32> {
+    let mut threads = HashSet::new();
+    // macOS thread enumeration via libproc would require additional setup
+    // For now, use a basic fallback
+    if let Ok(me) = Process::myself() {
+        if let Ok(task_status) = me.tasks() {
+            for task in task_status {
+                if let Ok(t) = task {
+                    threads.insert(t.tid as u32);
+                }
+            }
+        }
+    }
+    threads
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
+fn get_thread_ids() -> HashSet<u32> {
+    // Fallback for other platforms
+    HashSet::new()
+}
 
 // Protocol structures matching the common protocol
 #[derive(Debug, Deserialize)]
@@ -114,10 +192,8 @@ fn execute_test(
         escape_details: EscapeDetails::default(),
     };
 
-    // Capture baseline thread count
-    let baseline_thread_count = thread::available_parallelism()
-        .map(|n| n.get())
-        .unwrap_or(1);
+    // Capture baseline thread IDs
+    let baseline_threads = get_thread_ids();
 
     let start = Instant::now();
     let timeout = Duration::from_secs_f64(timeout_seconds);
@@ -151,20 +227,25 @@ fn execute_test(
     // Wait a bit for cleanup
     thread::sleep(Duration::from_millis(100));
 
-    // Check for thread leaks (simplified - in practice this is hard in Rust)
-    // We'd need to track threads via a global registry or use platform-specific APIs
-    let current_thread_count = thread::available_parallelism()
-        .map(|n| n.get())
-        .unwrap_or(1);
+    // Check for thread leaks using platform-specific APIs
+    let current_threads = get_thread_ids();
+    let escaped_threads: HashSet<u32> = current_threads
+        .iter()
+        .filter(|tid| !baseline_threads.contains(tid))
+        .copied()
+        .collect();
 
-    // Note: This is a simplified heuristic - detecting thread leaks in Rust is challenging
-    // because the standard library doesn't expose thread enumeration
-    if current_thread_count > baseline_thread_count {
+    if !escaped_threads.is_empty() {
         result.escape_detected = true;
-        result.escape_details.other.push(format!(
-            "Thread count increased: {} -> {}",
-            baseline_thread_count, current_thread_count
-        ));
+        for tid in escaped_threads {
+            result.escape_details.threads.push(ThreadEscape {
+                thread_id: tid.to_string(),
+                name: format!("thread_{}", tid),
+                is_daemon: false,
+                state: "unknown".to_string(),
+                stack_trace: None,
+            });
+        }
     }
 
     result

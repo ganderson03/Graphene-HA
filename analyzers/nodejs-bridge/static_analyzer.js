@@ -21,6 +21,10 @@ function analyzeFile(sourceFile, functionName) {
         let functionStartLine = -1;
         const timerHandles = new Set();
         const clearedHandles = new Set();
+        const unawaitedPromises = new Set();
+        const awaitedPromises = new Set();
+        const setTimeoutCalls = [];  // Track all setTimeout calls
+        const clearTimeoutCalls = [];  // Track all clearTimeout calls
         
         for (let i = 0; i < lines.length; i++) {
             const line = lines[i];
@@ -29,7 +33,7 @@ function analyzeFile(sourceFile, functionName) {
             
             if (!inTargetFunction) {
                 // Look for function definition
-                const funcMatch = trimmed.match(/(?:function\s+|const\s+|let\s+|var\s+)(\w+)\s*[=\(]/);
+                const funcMatch = trimmed.match(/(?:function\s+|const\s+|let\s+|var\s+|async\s+)(\w+)\s*[=\(]/);
                 if (funcMatch && funcMatch[1] === functionName) {
                     inTargetFunction = true;
                     functionStartLine = lineNum;
@@ -48,6 +52,7 @@ function analyzeFile(sourceFile, functionName) {
                     const varMatch = trimmed.match(/(?:const|let|var)\s+(\w+)\s*=/);
                     if (varMatch) {
                         timerHandles.add(varMatch[1]);
+                        setTimeoutCalls.push({var: varMatch[1], line: lineNum});
                     } else {
                         // setTimeout called without storing the handle - likely a leak
                         escapes.push({
@@ -62,11 +67,12 @@ function analyzeFile(sourceFile, functionName) {
                     }
                 }
                 
-                // Check for setInterval without clearInterval
+                // Check for setInterval (always a problem if not cleared)
                 if (trimmed.includes('setInterval')) {
                     const varMatch = trimmed.match(/(?:const|let|var)\s+(\w+)\s*=/);
                     if (varMatch) {
                         timerHandles.add(varMatch[1]);
+                        setTimeoutCalls.push({var: varMatch[1], line: lineNum});
                     } else {
                         escapes.push({
                             escape_type: 'concurrency',
@@ -84,6 +90,7 @@ function analyzeFile(sourceFile, functionName) {
                 const clearMatch = trimmed.match(/clear(?:Timeout|Interval)\((\w+)\)/);
                 if (clearMatch) {
                     clearedHandles.add(clearMatch[1]);
+                    clearTimeoutCalls.push({var: clearMatch[1], line: lineNum});
                 }
                 
                 // Check for process.nextTick without completion
@@ -115,9 +122,31 @@ function analyzeFile(sourceFile, functionName) {
                     }
                 }
                 
+                // Check for Promises/async - detect .then() without .catch() or await
+                const promiseMatch = trimmed.match(/(?:const|let|var)\s+(\w+)\s*=\s*(?:new\s+)?Promise|\.then\(|\.catch\(|\.finally\(/);
+                if (promiseMatch && trimmed.includes('Promise')) {
+                    const varMatch = trimmed.match(/(?:const|let|var)\s+(\w+)\s*=/);
+                    if (varMatch) {
+                        unawaitedPromises.add(varMatch[1]);
+                    }
+                }
+                
+                // Check for await/catch to mark promises as handled
+                if (trimmed.includes('await ') || trimmed.includes('.catch(')) {
+                    const names = trimmed.match(/\b(\w+)\b/g) || [];
+                    names.forEach(name => awaitedPromises.add(name));
+                }
+                
+                // Check for async callbacks without await
+                if (trimmed.includes('.then(') && !trimmed.includes('await')) {
+                    const varMatch = trimmed.match(/(\w+)\.then\(/);
+                    if (varMatch) {
+                        unawaitedPromises.add(varMatch[1]);
+                    }
+                }
+                
                 if (braceDepth === 0) {
-                    // End of function - check for uncleared timers
-                    for (const handle of timerHandles) {
+                    // End of function - check for uncleared timers\n                    for (const handle of timerHandles) {
                         if (!clearedHandles.has(handle)) {
                             escapes.push({
                                 escape_type: 'concurrency',
@@ -126,6 +155,21 @@ function analyzeFile(sourceFile, functionName) {
                                 variable_name: handle,
                                 reason: `Timer handle '${handle}' created but not cleared`,
                                 confidence: 'high',
+                                code_snippet: null
+                            });
+                        }
+                    }
+                    
+                    // Check for unawaited promises
+                    for (const promise of unawaitedPromises) {
+                        if (!awaitedPromises.has(promise)) {
+                            escapes.push({
+                                escape_type: 'concurrency',
+                                line: lineNum,
+                                column: 0,
+                                variable_name: promise,
+                                reason: `Promise '${promise}' created but not awaited or handled`,
+                                confidence: 'medium',
                                 code_snippet: null
                             });
                         }
