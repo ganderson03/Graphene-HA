@@ -1,0 +1,19 @@
+[project]
+name = "graphene-ha"
+version = "0.2.0"
+description = "Graphene HA - Multi-language concurrency escape detection"
+readme = "README.md"
+requires-python = ">=3.8"
+dependencies = []
+
+[project.scripts]
+graphene = "graphene_ha.cli:main"
+
+[tool.uv]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["graphene_ha"]

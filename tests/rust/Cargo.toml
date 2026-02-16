@@ -1,0 +1,21 @@
+[package]
+name = "escape-tests-rust"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tokio = { version = "1.35", features = ["full", "macros", "rt-multi-thread"] }
+tokio-util = "0.7"
+futures = "0.3"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+path = "lib.rs"
+
+[[example]]
+name = "run_escape_threads"
+path = "run_escape_threads.rs"
+
+[[example]]
+name = "run_escape_async"
+path = "run_escape_async.rs"
