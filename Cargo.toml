@@ -6,7 +6,7 @@ authors = ["Graphene HA Team"]
 description = "Multi-language concurrency escape detection orchestrator"
 
 [dependencies]
-tokio = { version = "1.35", features = ["full"] }
+tokio = { version = "1.35", features = ["macros", "process", "io-util", "fs", "time", "rt-multi-thread"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 clap = { version = "4.4", features = ["derive"] }
