@@ -60,7 +60,7 @@ impl StaticEscapeAnalyzer for PythonStaticAnalyzer {
 impl PythonStaticAnalyzer {
     fn analyze_python_ast(&self, source_file: &str, function_name: &str) -> Result<Vec<StaticEscape>> {
         // Path to the static analyzer script
-        let script_path = std::path::Path::new("analyzers/python-bridge/static_analyzer.py");
+        let script_path = std::path::Path::new("analyzers/python/static_analyzer.py");
         
         if !script_path.exists() {
             anyhow::bail!("Static analyzer script not found at: {:?}", script_path);

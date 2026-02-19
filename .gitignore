@@ -7,7 +7,7 @@ Cargo.lock
 # Java
 *.class
 *.jar
-!analyzers/java-bridge/target/escape-analyzer.jar
+!analyzers/java/target/escape-analyzer.jar
 .mvn/
 target/
 pom.xml.tag
@@ -40,8 +40,8 @@ dist/
 *.out
 go.sum
 vendor/
-/analyzers/go-bridge/escape-analyzer
-/analyzers/go-bridge/escape-analyzer.exe
+/analyzers/go/escape-analyzer
+/analyzers/go/escape-analyzer.exe
 
 # Python
 __pycache__/

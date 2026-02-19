@@ -20,7 +20,7 @@ REM Build Java bridge
 echo ☕ Building Java analyzer bridge...
 where mvn >nul 2>nul
 if %ERRORLEVEL% EQU 0 (
-    cd analyzers\java-bridge
+    cd analyzers\java
     call mvn clean package -q
     cd ..\..
     echo ✅ Java bridge built
@@ -33,7 +33,7 @@ REM Setup Node.js bridge
 echo 📦 Setting up Node.js analyzer bridge...
 where node >nul 2>nul
 if %ERRORLEVEL% EQU 0 (
-    cd analyzers\nodejs-bridge
+    cd analyzers\nodejs
     call npm install --silent
     cd ..\..
     echo ✅ Node.js bridge ready
@@ -46,7 +46,7 @@ REM Build Go bridge
 echo 🐹 Building Go analyzer bridge...
 where go >nul 2>nul
 if %ERRORLEVEL% EQU 0 (
-    cd analyzers\go-bridge
+    cd analyzers\go
     go build -o escape-analyzer.exe main.go
     cd ..\..
     echo ✅ Go bridge built
@@ -57,7 +57,7 @@ echo.
 
 REM Build Rust bridge
 echo 🦀 Building Rust analyzer bridge...
-cd analyzers\rust-bridge
+cd analyzers\rust
 cargo build --release
 cd ..\..
 echo ✅ Rust bridge built

@@ -87,11 +87,11 @@ graphene-ha/
 │   ├── analyzer/             # Language bridges
 │   └── static_analyzer/      # Static analysis
 ├── analyzers/                # Language-specific analyzers
-│   ├── python-bridge/        # Python dynamic + static
-│   ├── nodejs-bridge/        # Node.js dynamic + static
-│   ├── go-bridge/            # Go dynamic + static
-│   ├── java-bridge/          # Java dynamic (static in Rust)
-│   └── rust-bridge/          # Rust dynamic (static in Rust)
+│   ├── python/               # Python dynamic + static
+│   ├── nodejs/               # Node.js dynamic + static
+│   ├── go/                   # Go dynamic + static
+│   ├── java/                 # Java dynamic (static in Rust)
+│   └── rust/                 # Rust dynamic (static in Rust)
 ├── tests/                    # Test cases for all languages
 │   ├── python/               # Python escape examples
 │   ├── nodejs/               # JavaScript examples
@@ -230,26 +230,26 @@ No build needed (uses standard library).
 
 ### Java
 ```bash
-cd analyzers/java-bridge
+cd analyzers/java
 mvn clean package
 ```
 
 ### Node.js
 ```bash
-cd analyzers/nodejs-bridge
+cd analyzers/nodejs
 npm install  # if dependencies added
 ```
 
 ### Go
 ```bash
-cd analyzers/go-bridge
+cd analyzers/go
 go build -o escape-analyzer main.go
 go build -o static-escape-analyzer static_analyzer.go
 ```
 
 ### Rust
 ```bash
-cd analyzers/rust-bridge
+cd analyzers/rust
 cargo build --release
 ```
 

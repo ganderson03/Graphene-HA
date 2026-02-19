@@ -249,7 +249,7 @@ class EscapeDetectionTester:
                 "timeout_seconds": 5
             }
             
-            cmd = ["node", "analyzers/nodejs-bridge/analyzer_bridge.js"]
+            cmd = ["node", "analyzers/nodejs/analyzer_bridge.js"]
             
             result = subprocess.run(
                 cmd,

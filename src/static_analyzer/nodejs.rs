@@ -60,7 +60,7 @@ impl StaticEscapeAnalyzer for NodeJsStaticAnalyzer {
 impl NodeJsStaticAnalyzer {
     fn analyze_js(&self, source_file: &str, function_name: &str) -> Result<Vec<StaticEscape>> {
         // Path to the static analyzer script
-        let script_path = std::path::Path::new("analyzers/nodejs-bridge/static_analyzer.js");
+        let script_path = std::path::Path::new("analyzers/nodejs/static_analyzer.js");
         
         if !script_path.exists() {
             anyhow::bail!("Static analyzer script not found at: {:?}", script_path);

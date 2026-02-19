@@ -12,18 +12,17 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
+import logging
+
 from .test_harness import PythonFunctionTestHarness
 from .vulnerability_detector import VulnerabilityDetector
-from .help import show_help
 from .logging_util import TestingLogger
 from .constants import (
     INPUT_PATTERNS,
     DEFAULT_REPEAT_COUNT,
-    DEFAULT_GENERATE_COUNT,
     DEFAULT_TIMEOUT,
     DEFAULT_LOG_DIR,
     DEFAULT_TEST_DIR,
-    PYTHON_TEST_DIR,
 )
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
@@ -63,6 +62,9 @@ def _load_function(target):
         module_path=Path(module_spec)
         if not module_path.exists():
             raise FileNotFoundError(f"File not found: {module_path}")
+        parent_dir=str(module_path.resolve().parent)
+        if parent_dir not in sys.path:
+            sys.path.insert(0,parent_dir)
         module_name=module_path.stem
         spec=importlib.util.spec_from_file_location(module_name,str(module_path))
         module=importlib.util.module_from_spec(spec)
@@ -80,6 +82,9 @@ def _discover_tests(root_dir):
     test_dir=Path(root_dir)/"tests"/"python"
     if not test_dir.exists():
         raise FileNotFoundError(f"Missing tests/python folder: {test_dir}")
+    test_dir_str=str(test_dir.resolve())
+    if test_dir_str not in sys.path:
+        sys.path.insert(0,test_dir_str)
     tests=[]
     for path in sorted(test_dir.glob("*.py")):
         if path.name.startswith("_"):
@@ -135,6 +140,19 @@ def _configure_logger(logger,verbose):
     for handler in logger.logger.handlers:
         if isinstance(handler,logging.StreamHandler):
             handler.setLevel(logging.DEBUG)
+
+
+def _validate_mode_flags(parser,args):
+    modes=[args.thread_mode,args.main_thread_mode,getattr(args,"process_mode",False)]
+    if sum(modes)>1:
+        parser.error("--thread-mode, --main-thread-mode, and --process-mode are mutually exclusive")
+
+
+def _resolve_thread_prefs(args,requires_thread=False,requires_main=False):
+    is_nt=os.name=="nt"
+    prefer_main=args.main_thread_mode or requires_main or (is_nt and not getattr(args,"process_mode",False) and args.main_thread_mode)
+    prefer_thread=(args.thread_mode or requires_thread or (is_nt and not getattr(args,"process_mode",False) and not args.main_thread_mode)) and not prefer_main
+    return prefer_thread,prefer_main
 
 
 def _ensure_rust_binary():
@@ -298,21 +316,11 @@ def main():
     list_parser=subparsers.add_parser("list",help="List available analyzers")
     list_parser.add_argument("--detailed",action="store_true",help="Show detailed analyzer capabilities")
     
-    # Help command
-    help_parser=subparsers.add_parser("help",help="Show help information")
-    help_parser.add_argument("topic",nargs="?",choices=["analyze","run-all","list"],help="Topic to get help for (analyze, run-all, list). Omit for general help")
-    
     args=parser.parse_args()
     
     if not args.command:
         parser.print_help()
         return 1
-    
-    # Help command
-    if args.command=="help":
-        topic=getattr(args,"topic",None)
-        show_help(topic)
-        return 0
     
     # List command always uses Rust binary
     if args.command=="list":
@@ -320,12 +328,7 @@ def main():
     
     # Route based on requirements
     if args.command=="analyze":
-        if args.thread_mode and args.process_mode:
-            parser.error("--thread-mode and --process-mode are mutually exclusive")
-        if args.main_thread_mode and args.process_mode:
-            parser.error("--main-thread-mode and --process-mode are mutually exclusive")
-        if args.main_thread_mode and args.thread_mode:
-            parser.error("--main-thread-mode and --thread-mode are mutually exclusive")
+        _validate_mode_flags(parser,args)
         
         # Collect inputs
         inputs=list(args.input or [])
@@ -347,22 +350,13 @@ def main():
         logger=TestingLogger(log_dir=args.log_dir,test_name=args.test_name,show_success=args.show_ok,run_dir=run_label)
         _configure_logger(logger,args.verbose)
         func=_load_function(args.target)
-        
-        default_thread_mode = os.name == "nt" and not args.process_mode and not args.main_thread_mode
-        default_main_thread_mode = os.name == "nt" and not args.process_mode and args.main_thread_mode
-        prefer_main_thread=args.main_thread_mode or default_main_thread_mode
-        prefer_thread=(args.thread_mode or default_thread_mode) and not prefer_main_thread
+        prefer_thread,prefer_main_thread=_resolve_thread_prefs(args)
         
         _run_tests(func,args.input,args.repeat,args.timeout,logger,prefer_thread=prefer_thread,prefer_main_thread=prefer_main_thread)
         return 0
     
     elif args.command=="run-all":
-        if args.thread_mode and args.process_mode:
-            parser.error("--thread-mode and --process-mode are mutually exclusive")
-        if args.main_thread_mode and args.process_mode:
-            parser.error("--main-thread-mode and --process-mode are mutually exclusive")
-        if args.main_thread_mode and args.thread_mode:
-            parser.error("--main-thread-mode and --thread-mode are mutually exclusive")
+        _validate_mode_flags(parser,args)
         
         # Delegate to Rust unless python-only
         if _should_use_rust_binary(args,"run-all"):
@@ -374,25 +368,15 @@ def main():
         root_dir=Path(__file__).resolve().parent.parent
         tests=_discover_tests(root_dir)
         
-        inputs=[]
-        if args.generate:
-            inputs.extend(_generate_inputs(args.generate,args.seed))
-        if not inputs:
-            inputs=[""]
+        inputs=_generate_inputs(args.generate,args.seed) if args.generate else [""]
         
         run_label=datetime.now().strftime("run_%Y%m%d_%H%M%S")
-        default_thread_mode = os.name == "nt" and not args.process_mode and not args.main_thread_mode
-        default_main_thread_mode = os.name == "nt" and not args.process_mode and args.main_thread_mode
-        
         for target,func,requires_thread,requires_main in tests:
             base_name=args.test_name or "escape_suite"
             test_name=f"{base_name}_{func.__module__.split('.')[-1]}_{func.__name__}"
             logger=TestingLogger(log_dir=args.log_dir,test_name=test_name,show_success=args.show_ok,run_dir=run_label)
             _configure_logger(logger,args.verbose)
-            
-            prefer_main_thread=args.main_thread_mode or requires_main or default_main_thread_mode
-            prefer_thread=(args.thread_mode or requires_thread or default_thread_mode) and not prefer_main_thread
-            
+            prefer_thread,prefer_main_thread=_resolve_thread_prefs(args,requires_thread,requires_main)
             _run_tests(func,inputs,args.repeat,args.timeout,logger,prefer_thread=prefer_thread,prefer_main_thread=prefer_main_thread)
         
         return 0

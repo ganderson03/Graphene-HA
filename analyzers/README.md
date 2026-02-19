@@ -8,11 +8,11 @@ Each language has its own bridge directory following a consistent organization:
 
 ```
 analyzers/
-├── python-bridge/     # Python analysis bridge
-├── nodejs-bridge/     # Node.js/JavaScript analysis bridge
-├── go-bridge/         # Go analysis bridge
-├── java-bridge/       # Java analysis bridge
-└── rust-bridge/       # Rust analysis bridge
+├── python/     # Python analysis bridge
+├── nodejs/     # Node.js/JavaScript analysis bridge
+├── go/         # Go analysis bridge
+├── java/       # Java analysis bridge
+└── rust/       # Rust analysis bridge
 ```
 
 ## File Organization Conventions
@@ -121,26 +121,26 @@ No build required (interpreted language)
 
 ### Node.js
 ```bash
-cd nodejs-bridge
+cd nodejs
 npm install  # if dependencies added
 ```
 
 ### Go
 ```bash
-cd go-bridge
+cd go
 go build -o escape-analyzer main.go
 go build -o static-escape-analyzer static_analyzer.go
 ```
 
 ### Java
 ```bash
-cd java-bridge
+cd java
 mvn clean package
 ```
 
 ### Rust
 ```bash
-cd rust-bridge
+cd rust
 cargo build --release
 ```
 
@@ -156,7 +156,7 @@ The Rust orchestrator (`src/orchestrator.rs`) automatically:
 
 To add support for a new language:
 
-1. Create a new directory: `analyzers/<language>-bridge/`
+1. Create a new directory: `analyzers/<language>/`
 2. Implement dynamic analyzer with the standard protocol
 3. Implement or integrate static analyzer
 4. Add README.md documenting structure and usage

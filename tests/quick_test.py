@@ -49,7 +49,7 @@ def test_nodejs_escape(func_name, module_name):
         }
         
         result = subprocess.run(
-            ["node", "analyzers/nodejs-bridge/analyzer_bridge.js"],
+            ["node", "analyzers/nodejs/analyzer_bridge.js"],
             input=json.dumps(request),
             capture_output=True,
             text=True,

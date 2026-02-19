@@ -17,7 +17,7 @@ echo ""
 # Build Java bridge
 echo "☕ Building Java analyzer bridge..."
 if command -v mvn &> /dev/null; then
-    cd analyzers/java-bridge
+    cd analyzers/java
     mvn clean package -q
     cd ../..
     echo "✅ Java bridge built"
@@ -29,7 +29,7 @@ echo ""
 # Setup Node.js bridge
 echo "📦 Setting up Node.js analyzer bridge..."
 if command -v node &> /dev/null; then
-    cd analyzers/nodejs-bridge
+    cd analyzers/nodejs
     npm install --silent
     chmod +x analyzer_bridge.js
     cd ../..
@@ -42,7 +42,7 @@ echo ""
 # Build Go bridge
 echo "🐹 Building Go analyzer bridge..."
 if command -v go &> /dev/null; then
-    cd analyzers/go-bridge
+    cd analyzers/go
     go build -o escape-analyzer main.go
     cd ../..
     echo "✅ Go bridge built"
@@ -53,7 +53,7 @@ echo ""
 
 # Build Rust bridge
 echo "🦀 Building Rust analyzer bridge..."
-cd analyzers/rust-bridge
+cd analyzers/rust
 cargo build --release
 cd ../..
 echo "✅ Rust bridge built"
@@ -70,7 +70,7 @@ echo ""
 # Setup Python bridge
 echo "🐍 Setting up Python analyzer bridge..."
 if command -v python3 &> /dev/null; then
-    chmod +x analyzers/python-bridge/analyzer_bridge.py
+    chmod +x analyzers/python/analyzer_bridge.py
     echo "✅ Python bridge ready"
 else
     echo "⚠️  Python3 not found - skipping Python bridge"

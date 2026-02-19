@@ -268,13 +268,6 @@ pub struct AnalyzerInfo {
     pub executable_path: String,
 }
 
-/// Health check for analyzer
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[allow(dead_code)]
-pub struct HealthCheckRequest {
-    pub ping: String,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HealthCheckResponse {
     pub pong: String,

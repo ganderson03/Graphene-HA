@@ -4,7 +4,7 @@ This folder contains Go functions for escape detection examples.
 
 ## Notes
 
-- The Go analyzer currently does not load plugins (see analyzers/go-bridge/main.go).
+- The Go analyzer currently does not load plugins (see analyzers/go/main.go).
 - Go plugins are not supported on Windows, so these examples are primarily for reference.
 
 ## Example (Linux/macOS)

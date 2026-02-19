@@ -24,7 +24,6 @@ class TestResult:
 def _get_child_processes_from_proc(parent_pid=None):
  """Get child processes using /proc filesystem (Linux only)"""
  try:
-  from pathlib import Path
   if parent_pid is None:
    parent_pid = os.getpid()
   
@@ -42,21 +41,6 @@ def _get_child_processes_from_proc(parent_pid=None):
   return children
  except Exception:
   return []
-
-def _get_escaped_processes():
- """Get details about any escaped processes"""
- import subprocess
- try:
-  # Try to use ps to get child processes
-  result = subprocess.run(
-   ["ps", "-ef"],
-   capture_output=True,
-   text=True,
-   timeout=1
-  )
-  return result.stdout
- except Exception:
-  return ""
 
 def _collect_escape_details(baseline_thread_ids, baseline_children):
  import threading

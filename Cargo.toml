@@ -20,7 +20,7 @@ async-trait = "0.1"
 [workspace]
 members = [
     ".",
-    "analyzers/rust-bridge",
+    "analyzers/rust",
     "tests/rust",
 ]
 
