@@ -391,12 +391,25 @@ def analyze_file(file_path: str, function_name: str) -> Dict[str, Any]:
     try:
         with open(file_path, 'r') as f:
             source_code = f.read()
-        
+    except FileNotFoundError:
+        return {"escapes": [], "success": False, "error": f"File not found: {file_path}"}
+    except IOError as e:
+        return {"escapes": [], "success": False, "error": f"Cannot read file: {str(e)}"}
+    except Exception as e:
+        return {"escapes": [], "success": False, "error": f"File error: {type(e).__name__}: {str(e)}"}
+    
+    try:
         tree = ast.parse(source_code, filename=file_path)
+    except SyntaxError as e:
+        return {"escapes": [], "success": False, "error": f"Syntax error at line {e.lineno}: {str(e)}"}
+    except Exception as e:
+        return {"escapes": [], "success": False, "error": f"Parse error: {type(e).__name__}: {str(e)}"}
+    
+    try:
         analyzer = EscapeAnalyzer(source_code, function_name)
         analyzer.visit(tree)
-        
         return {
+            "target_function": function_name,
             "escapes": [asdict(e) for e in analyzer.escapes],
             "success": True
         }
@@ -404,7 +417,7 @@ def analyze_file(file_path: str, function_name: str) -> Dict[str, Any]:
         return {
             "escapes": [],
             "success": False,
-            "error": str(e)
+            "error": f"Analysis failed: {type(e).__name__}: {str(e)}"
         }
 
 
@@ -413,12 +426,29 @@ def main():
         print(json.dumps({
             "escapes": [],
             "success": False,
-            "error": "Usage: static_analyzer.py <file_path> <function_name>"
+            "error": "Usage: static_analyzer.py <file_path> <function_name> (got {} args)".format(len(sys.argv) - 1)
         }))
         sys.exit(1)
     
     file_path = sys.argv[1]
     function_name = sys.argv[2]
+    
+    try:
+        from pathlib import Path
+        if not Path(file_path).exists():
+            print(json.dumps({
+                "escapes": [],
+                "success": False,
+                "error": f"File not found: {file_path}"
+            }))
+            sys.exit(1)
+    except Exception as e:
+        print(json.dumps({
+            "escapes": [],
+            "success": False,
+            "error": f"Cannot access file: {str(e)}"
+        }))
+        sys.exit(1)
     
     result = analyze_file(file_path, function_name)
     print(json.dumps(result, indent=2))

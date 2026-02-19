@@ -5,7 +5,9 @@ import time
 import multiprocessing
 import asyncio
 import sys
+import threading
 from dataclasses import dataclass
+from pathlib import Path
 
 @dataclass
 class TestResult:
@@ -19,16 +21,103 @@ class TestResult:
  escape_detected:bool=False
  escape_details:str=""
 
+def _get_child_processes_from_proc(parent_pid=None):
+ """Get child processes using /proc filesystem (Linux only)"""
+ try:
+  from pathlib import Path
+  if parent_pid is None:
+   parent_pid = os.getpid()
+  
+  # Look for child processes in /proc
+  children = []
+  for status_file in Path("/proc").glob("*/status"):
+   try:
+    with open(status_file) as f:
+     content = f.read()
+     if f"PPid:\t{parent_pid}" in content:
+      pid = int(status_file.parent.name)
+      children.append(pid)
+   except (FileNotFoundError, ValueError, PermissionError):
+    pass
+  return children
+ except Exception:
+  return []
+
+def _get_escaped_processes():
+ """Get details about any escaped processes"""
+ import subprocess
+ try:
+  # Try to use ps to get child processes
+  result = subprocess.run(
+   ["ps", "-ef"],
+   capture_output=True,
+   text=True,
+   timeout=1
+  )
+  return result.stdout
+ except Exception:
+  return ""
+
 def _collect_escape_details(baseline_thread_ids, baseline_children):
  import threading
  import multiprocessing as mp
  
+ # Collect thread escapes
  current_threads = threading.enumerate()
  current_thread_ids = {thr.ident for thr in current_threads}
  escape_thread_ids = current_thread_ids - baseline_thread_ids
  escape_threads = [thr for thr in current_threads if thr.ident in escape_thread_ids and thr.is_alive()]
  escape_details = [f"thread:{thr.name}:{'daemon' if thr.daemon else 'nondaemon'}" for thr in escape_threads]
- escape_details.extend(f"process:{child.pid}" for child in mp.active_children() if child.pid not in baseline_children)
+ 
+ # Collect process escapes (conservative detection)
+ escaped_child_pids = set()
+ 
+ # Layer 1: multiprocessing.active_children() - most reliable
+ current_children = {child.pid for child in mp.active_children()}
+ new_processes = current_children - baseline_children
+ 
+ # Only consider processes that are actively tracked by multiprocessing
+ # This avoids false positives from system processes
+ for pid in new_processes:
+  try:
+   # Verify it's actually a child process we created
+   if os.path.exists(f"/proc/{pid}/status"):
+    with open(f"/proc/{pid}/status") as f:
+     content = f.read()
+     # Extract process name
+     for line in content.split('\n'):
+      if line.startswith("Name:"):
+       name = line.split(":", 1)[1].strip()
+       escape_details.append(f"process:{pid}:{name}")
+       escaped_child_pids.add(pid)
+       break
+  except Exception:
+   pass
+ 
+ # Layer 2: /proc filesystem detection (only for spawn processes we might have missed)
+ if os.path.exists("/proc") and not escaped_child_pids:
+  try:
+   proc_children = _get_child_processes_from_proc()
+   # Only include processes that are direct children and not in baseline
+   for pid in proc_children:
+    if pid not in baseline_children and pid not in escaped_child_pids:
+     try:
+      # Double-check this is actually a Python child process
+      if os.path.exists(f"/proc/{pid}/status"):
+       with open(f"/proc/{pid}/status") as f:
+        content = f.read()
+        for line in content.split('\n'):
+         if line.startswith("Name:"):
+          name = line.split(":", 1)[1].strip()
+          # Only add if it looks like a process we created (avoid system processes)
+          if name not in ["systemd", "bash", "sh", "grep", "ps"]:
+           escape_details.append(f"process:{pid}:{name}")
+           escaped_child_pids.add(pid)
+          break
+     except Exception:
+      pass
+  except Exception:
+   pass
  
  # Detect asyncio task escapes
  try:
@@ -41,7 +130,7 @@ def _collect_escape_details(baseline_thread_ids, baseline_children):
      coro = task.get_coro()
      escape_details.append(f"asyncio_task:{coro.__name__}:pending")
    except RuntimeError:
-    # No running event loop, check for unrunning tasks
+    # No running event loop
     pass
  except Exception:
   pass
@@ -52,12 +141,13 @@ def _function_worker(func,input_data,fixed_kwargs,result_queue):
  import threading
  import multiprocessing as mp
  baseline_threads={thr.ident for thr in threading.enumerate()}
+ baseline_children={child.pid for child in mp.active_children()}
  try:
   output=str(func(input_data,**fixed_kwargs));error="";crashed=False
  except Exception as e:
   output="";error=f"{type(e).__name__}: {str(e)}";crashed=True
- time.sleep(0.1)
- escape_detected,escape_details=_collect_escape_details(baseline_threads,{child.pid for child in mp.active_children()})
+ time.sleep(0.5)  # Increased wait for child processes to initialize
+ escape_detected,escape_details=_collect_escape_details(baseline_threads,baseline_children)
  result_queue.put({"output":output,"error":error,"crashed":crashed,"escape_detected":escape_detected,"escape_details":escape_details})
  result_queue.close()
  result_queue.join_thread()
@@ -86,6 +176,7 @@ class PythonFunctionTestHarness:
   except Exception:
    return False
  def _run_in_process(self,input_data):
+  baseline_children={child.pid for child in multiprocessing.active_children()}
   ctx=multiprocessing.get_context("spawn")
   result_queue=ctx.Queue()
   proc=ctx.Process(target=_function_worker,args=(self.func,input_data,self.fixed_kwargs,result_queue))
@@ -93,11 +184,15 @@ class PythonFunctionTestHarness:
   proc.join(timeout=self.timeout)
   if proc.is_alive():
    proc.terminate();proc.join()
-   return TestResult(input_data=input_data,success=False,crashed=True,output="",error="Timeout exceeded",return_code=-1,anomaly=True)
+   time.sleep(0.2)  # Wait for process cleanup
+   escape_detected,escape_details=_collect_escape_details(set(),baseline_children)
+   return TestResult(input_data=input_data,success=False,crashed=True,output="",error=f"Process timeout after {self.timeout}s (PID: {proc.pid})",return_code=-1,anomaly=True,escape_detected=escape_detected,escape_details=escape_details or "process_timeout")
+  time.sleep(0.5)  # Increased wait for grandchild processes to initialize
   try:
    payload=result_queue.get_nowait()
   except queue.Empty:
-   return TestResult(input_data=input_data,success=False,crashed=True,output="",error="No result from child process",return_code=-1,anomaly=True)
+   escape_detected,escape_details=_collect_escape_details(set(),baseline_children)
+   return TestResult(input_data=input_data,success=False,crashed=True,output="",error=f"Child process did not return result (timeout: {self.timeout}s, PID: {proc.pid})",return_code=-1,anomaly=True,escape_detected=escape_detected,escape_details=escape_details)
   if payload.get("crashed"):
    return TestResult(input_data=input_data,success=False,crashed=True,output="",error=payload.get("error",""),return_code=-1,escape_detected=payload.get("escape_detected",False),escape_details=payload.get("escape_details",""))
   return TestResult(input_data=input_data,success=True,crashed=False,output=payload.get("output",""),error="",return_code=0,escape_detected=payload.get("escape_detected",False),escape_details=payload.get("escape_details",""))
@@ -116,14 +211,14 @@ class PythonFunctionTestHarness:
    if not r["completed"]:
     time.sleep(0.1)
     escape_detected,escape_details=_collect_escape_details(baseline_threads,baseline_children)
-    return TestResult(input_data=input_data,success=False,crashed=True,output="",error="Timeout exceeded",return_code=-1,anomaly=True,escape_detected=escape_detected,escape_details=escape_details or "function_timeout")
-   time.sleep(0.1)
+    return TestResult(input_data=input_data,success=False,crashed=True,output="",error=f"Thread timeout after {self.timeout}s (TID: {t.ident})",return_code=-1,anomaly=True,escape_detected=escape_detected,escape_details=escape_details or "function_timeout")
+   time.sleep(0.2)  # Increased wait for child process initialization
    escape_detected,escape_details=_collect_escape_details(baseline_threads,baseline_children)
    if r["error"]:
     return TestResult(input_data=input_data,success=False,crashed=True,output="",error=r["error"],return_code=-1,escape_detected=escape_detected,escape_details=escape_details)
    return TestResult(input_data=input_data,success=True,crashed=False,output=r["result"],error="",return_code=0,escape_detected=escape_detected,escape_details=escape_details)
   except Exception as e:
-   return TestResult(input_data=input_data,success=False,crashed=True,output="",error=f"{type(e).__name__}: {str(e)}",return_code=-1)
+   import traceback;return TestResult(input_data=input_data,success=False,crashed=True,output="",error=f"{type(e).__name__}: {str(e)} [thread execution error]",return_code=-1)
 
  def _run_in_main_thread(self,input_data):
   import threading
@@ -139,7 +234,7 @@ class PythonFunctionTestHarness:
    error=f"{type(e).__name__}: {str(e)}"
    crashed=True
   elapsed=time.time()-start
-  time.sleep(0.1)
+  time.sleep(0.5)  # Increased wait for child process initialization
   escape_detected,escape_details=_collect_escape_details(baseline_threads,baseline_children)
   if elapsed > self.timeout:
    return TestResult(input_data=input_data,success=False,crashed=True,output="",error="Timeout exceeded",return_code=-1,anomaly=True,escape_detected=escape_detected,escape_details=escape_details or "main_thread_timeout")

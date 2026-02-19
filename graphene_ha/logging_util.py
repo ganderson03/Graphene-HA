@@ -7,7 +7,7 @@ from pathlib import Path
 
 class TestingLogger:
     def __init__(self,log_dir="logs",test_name=None,show_success=False,run_dir=None):
-        base_dir=Path(log_dir)
+        base_dir=Path(log_dir).resolve()
         run_label=run_dir or datetime.now().strftime("run_%Y%m%d_%H%M%S")
         self.log_dir=base_dir/run_label/(test_name or "unnamed_test")
         timestamp=datetime.now().strftime("%Y%m%d_%H%M%S")

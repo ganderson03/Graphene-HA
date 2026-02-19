@@ -3,7 +3,6 @@ import argparse
 import importlib
 import importlib.util
 import inspect
-import logging
 import os
 import random
 import subprocess
@@ -28,6 +27,20 @@ from .constants import (
 )
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
+
+
+def _validate_positive_float(value):
+    val = float(value)
+    if val <= 0:
+        raise argparse.ArgumentTypeError(f"timeout must be positive (got {val})")
+    return val
+
+
+def _validate_positive_int(value):
+    val = int(value)
+    if val <= 0:
+        raise argparse.ArgumentTypeError(f"repeat must be positive (got {val})")
+    return val
 
 
 @dataclass
@@ -250,10 +263,10 @@ def main():
     analyze_parser.add_argument("target",help="Function target in format: module:function or file.ext:function")
     analyze_parser.add_argument("--input",action="append",default=[],help="Input data for the function (repeatable)")
     analyze_parser.add_argument("--input-file",help="File with one input per line")
-    analyze_parser.add_argument("--repeat",type=int,default=DEFAULT_REPEAT_COUNT,help=f"Repeat each input N times (default: {DEFAULT_REPEAT_COUNT})")
+    analyze_parser.add_argument("--repeat",type=_validate_positive_int,default=DEFAULT_REPEAT_COUNT,help=f"Repeat each input N times (default: {DEFAULT_REPEAT_COUNT})")
     analyze_parser.add_argument("--generate",type=int,default=0,help="Generate N simple inputs (Python only)")
     analyze_parser.add_argument("--seed",type=int,help="Seed for generated inputs (Python only)")
-    analyze_parser.add_argument("--timeout",type=float,default=DEFAULT_TIMEOUT,help=f"Timeout per execution in seconds (default: {DEFAULT_TIMEOUT})")
+    analyze_parser.add_argument("--timeout",type=_validate_positive_float,default=DEFAULT_TIMEOUT,help=f"Timeout per execution in seconds (default: {DEFAULT_TIMEOUT})")
     analyze_parser.add_argument("--log-dir",default=DEFAULT_LOG_DIR,help=f"Output directory for reports (default: {DEFAULT_LOG_DIR})")
     analyze_parser.add_argument("--test-name",help="Test session name (Python only)")
     analyze_parser.add_argument("--language",help="Language (python, java, javascript, go, rust). Auto-detected if not specified")
@@ -271,9 +284,9 @@ def main():
     runall_parser.add_argument("--log-dir",default=DEFAULT_LOG_DIR,help=f"Output directory for reports (default: {DEFAULT_LOG_DIR})")
     runall_parser.add_argument("--language",help="Filter by language (python, java, javascript, go, rust)")
     runall_parser.add_argument("--python-only",action="store_true",help="Run only Python tests using native Python harness")
-    runall_parser.add_argument("--repeat",type=int,default=1,help="Repeat each input N times (Python-only mode, default: 1)")
+    runall_parser.add_argument("--repeat",type=_validate_positive_int,default=1,help="Repeat each input N times (Python-only mode, default: 1)")
     runall_parser.add_argument("--seed",type=int,help="Seed for generated inputs (Python-only mode)")
-    runall_parser.add_argument("--timeout",type=float,default=DEFAULT_TIMEOUT,help=f"Timeout in seconds (Python-only mode, default: {DEFAULT_TIMEOUT})")
+    runall_parser.add_argument("--timeout",type=_validate_positive_float,default=DEFAULT_TIMEOUT,help=f"Timeout in seconds (Python-only mode, default: {DEFAULT_TIMEOUT})")
     runall_parser.add_argument("--thread-mode",action="store_true",help="Force thread-based execution (Python-only mode)")
     runall_parser.add_argument("--main-thread-mode",action="store_true",help="Run in main thread (Python-only mode)")
     runall_parser.add_argument("--process-mode",action="store_true",help="Force process isolation (Python-only mode)")
