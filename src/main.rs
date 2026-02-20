@@ -66,7 +66,7 @@ enum Commands {
         language: Option<String>,
 
         /// Analysis mode: dynamic (runtime), static (compile-time), or both
-        #[arg(short = 'm', long, default_value = "dynamic")]
+        #[arg(short = 'm', long, default_value = "both")]
         analysis_mode: CliAnalysisMode,
 
         /// Enable verbose logging

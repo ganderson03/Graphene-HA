@@ -22,15 +22,15 @@ All functionality is available through the `graphene` command via UV:
 # List available analyzers
 uv run graphene list --detailed
 
-# Python analysis
+# Python analysis (runs both static and dynamic by default)
 uv run graphene analyze tests/python/escape_threads.py:spawn_non_daemon_thread \
   --input "test" --repeat 3
 
-# Python with static analysis
+# Python analysis - dynamic analysis only
 uv run graphene analyze tests/python/escape_threads.py:spawn_non_daemon_thread \
-  --analysis-mode both --input "test"
+  --analysis-mode dynamic --input "test"
 
-# Java analysis
+# Java analysis (runs both static and dynamic by default)
 uv run graphene analyze com.escape.tests.ThreadEscapes:spawnNonDaemonThread \
   --language java --input "test"
 
@@ -76,6 +76,24 @@ uv run graphene --run-all --python-only --generate 20
 - Channels without receives (Go)
 - Global concurrency object storage
 - Executor services without shutdown
+
+## Analysis Modes
+
+### Default Behavior
+By default, **both static and dynamic analyses run together** (`--analysis-mode both`). Results from both analyses are merged and saved to the same session directory.
+
+### Available Modes
+- **both** (default): Runs static analysis on source code and dynamic analysis at runtime, combining findings
+- **dynamic**: Runtime analysis only - executes code and monitors for escaping concurrency objects
+- **static**: Source code analysis only - examines code patterns without execution
+
+All results are saved in a timestamped session directory under `logs/` (or custom `--output-dir`):
+```
+logs/session_20260220_134137/
+├── summary.md          # Overall findings
+├── dynamic_results.csv # Execution traces
+└── vulnerabilities.md  # Detailed vulnerabilities
+```
 
 ## Project Structure
 

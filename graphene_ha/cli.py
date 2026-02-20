@@ -288,7 +288,7 @@ def main():
     analyze_parser.add_argument("--log-dir",default=DEFAULT_LOG_DIR,help=f"Output directory for reports (default: {DEFAULT_LOG_DIR})")
     analyze_parser.add_argument("--test-name",help="Test session name (Python only)")
     analyze_parser.add_argument("--language",help="Language (python, java, javascript, go, rust). Auto-detected if not specified")
-    analyze_parser.add_argument("--analysis-mode",choices=["dynamic","static","both"],default="dynamic",help="Analysis mode: dynamic (runtime), static (compile-time), or both (default: dynamic)")
+    analyze_parser.add_argument("--analysis-mode",choices=["dynamic","static","both"],default="both",help="Analysis mode: dynamic (runtime), static (compile-time), or both (default: both)")
     analyze_parser.add_argument("--thread-mode",action="store_true",help="Force thread-based execution (Python only)")
     analyze_parser.add_argument("--main-thread-mode",action="store_true",help="Run in main thread (Python only)")
     analyze_parser.add_argument("--process-mode",action="store_true",help="Force process isolation (Python only)")
