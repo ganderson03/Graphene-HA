@@ -1,9 +1,40 @@
 use async_trait::async_trait;
 use anyhow::{Result, Context};
 use std::process::Stdio;
+use std::path::PathBuf;
 use tokio::process::Command;
 use tokio::io::AsyncWriteExt;
 use crate::protocol::{AnalyzeRequest, AnalyzeResponse, AnalyzerInfo, HealthCheckResponse};
+
+/// Find workspace root by looking for Cargo.toml or using executable location
+pub fn workspace_root() -> Result<PathBuf> {
+    // First try current_dir and look for Cargo.toml
+    if let Ok(cwd) = std::env::current_dir() {
+        if cwd.join("Cargo.toml").exists() {
+            return Ok(cwd);
+        }
+        // Try parent directories
+        let mut current = cwd.as_path();
+        while let Some(parent) = current.parent() {
+            if parent.join("Cargo.toml").exists() {
+                return Ok(parent.to_path_buf());
+            }
+            current = parent;
+        }
+    }
+    
+    // Fallback: use executable location
+    if let Ok(exe_path) = std::env::current_exe() {
+        // Go up from target/release/graphene-ha to workspace root
+        if let Some(parent) = exe_path.parent().and_then(|p| p.parent()).and_then(|p| p.parent()) {
+            if parent.join("Cargo.toml").exists() {
+                return Ok(parent.to_path_buf());
+            }
+        }
+    }
+    
+    anyhow::bail!("Could not find workspace root (no Cargo.toml found)")
+}
 
 /// Trait for language-specific analyzers
 #[async_trait]

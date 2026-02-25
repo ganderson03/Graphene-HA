@@ -477,10 +477,7 @@ fn discover_targets_for_language(language: &str, test_dir: &Path) -> Result<Vec<
         "javascript" => discover_nodejs_targets(test_dir),
         "java" => discover_java_targets(test_dir),
         "rust" => discover_rust_targets(test_dir),
-        "go" => {
-            warn!("Go run-all is not supported (plugin loading not implemented)");
-            Ok(Vec::new())
-        }
+        "go" => discover_go_targets(test_dir),
         _ => Ok(Vec::new()),
     }
 }
@@ -829,6 +826,50 @@ fn extract_rust_functions(content: &str) -> Vec<String> {
                 if is_valid_identifier(func) {
                     functions.push(func.to_string());
                 }
+            }
+        }
+    }
+
+    functions
+}
+
+fn discover_go_targets(test_dir: &Path) -> Result<Vec<String>> {
+    let dir = match resolve_language_dir(test_dir, "go", "go") {
+        Some(path) => path,
+        None => return Ok(Vec::new()),
+    };
+
+    let mut targets = Vec::new();
+    let files = collect_files_recursive(&dir, "go")?;
+    for file in files {
+        let content = fs::read_to_string(&file)
+            .with_context(|| format!("Failed to read file: {}", file.display()))?;
+        for func in extract_go_functions(&content) {
+            targets.push(format!("{}:{}", to_relative_path(&file), func));
+        }
+    }
+
+    Ok(targets)
+}
+
+fn extract_go_functions(content: &str) -> Vec<String> {
+    let mut functions = Vec::new();
+    for line in content.lines() {
+        let trimmed = line.trim();
+        // Match "func FunctionName(_input string) string"
+        if !trimmed.starts_with("func ") {
+            continue;
+        }
+
+        let after_func = trimmed.strip_prefix("func ").unwrap_or("");
+        
+        // Extract function name (everything before the first '(')
+        if let Some(paren_idx) = after_func.find('(') {
+            let func_name = after_func[..paren_idx].trim();
+            
+            // Check if function is exported (starts with uppercase)
+            if !func_name.is_empty() && func_name.chars().next().unwrap().is_uppercase() {
+                functions.push(func_name.to_string());
             }
         }
     }

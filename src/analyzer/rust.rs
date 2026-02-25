@@ -3,7 +3,7 @@ use crate::analyzer::BridgeAnalyzer;
 use crate::protocol::AnalyzerInfo;
 
 pub async fn create() -> Result<BridgeAnalyzer> {
-    let bridge_binary = std::env::current_dir()?
+    let bridge_binary = crate::analyzer::workspace_root()?
         .join("target/release/rust-analyzer")
         .to_string_lossy()
         .to_string();

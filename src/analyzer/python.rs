@@ -5,7 +5,7 @@ use crate::protocol::AnalyzerInfo;
 
 pub async fn create() -> Result<BridgeAnalyzer> {
     let python_path = find_python().await?;
-    let bridge_script = std::env::current_dir()?
+    let bridge_script = crate::analyzer::workspace_root()?
         .join("analyzers/python/analyzer_bridge.py")
         .to_string_lossy()
         .to_string();

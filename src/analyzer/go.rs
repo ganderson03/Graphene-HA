@@ -5,7 +5,7 @@ use crate::protocol::AnalyzerInfo;
 
 pub async fn create() -> Result<BridgeAnalyzer> {
     find_go().await?;
-    let bridge_binary = std::env::current_dir()?
+    let bridge_binary = crate::analyzer::workspace_root()?
         .join("analyzers/go/escape-analyzer")
         .to_string_lossy()
         .to_string();

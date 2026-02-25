@@ -146,7 +146,8 @@ function analyzeFile(sourceFile, functionName) {
                 }
                 
                 if (braceDepth === 0) {
-                    // End of function - check for uncleared timers\n                    for (const handle of timerHandles) {
+                    // End of function - check for uncleared timers
+                    for (const handle of timerHandles) {
                         if (!clearedHandles.has(handle)) {
                             escapes.push({
                                 escape_type: 'concurrency',

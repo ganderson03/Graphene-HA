@@ -49,6 +49,7 @@ def spawn_global_waiting_thread(_input_data):
         event.wait()
 
     thread = threading.Thread(target=worker, name="global-waiter")
+    event.set()  # Avoid indefinite wait while still exercising escape detection
     thread.start()
     _leaked_threads.append(thread)
     return "ok"

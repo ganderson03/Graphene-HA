@@ -1,6 +1,7 @@
 use anyhow::Result;
 use std::path::PathBuf;
 use chrono::Local;
+use uuid::Uuid;
 use crate::protocol::{AnalyzeResponse, Vulnerability};
 
 pub struct ReportGenerator {
@@ -16,7 +17,16 @@ impl ReportGenerator {
         std::fs::create_dir_all(&self.output_dir)?;
 
         let timestamp = Local::now().format("%Y%m%d_%H%M%S");
-        let session_dir = self.output_dir.join(format!("session_{}", timestamp));
+        let uuid_str = Uuid::new_v4().to_string();
+        let random_id = uuid_str.split('-').next().unwrap_or("xxxx");
+        let language = response.language.trim();
+        let language_dir = if language.is_empty() {
+            self.output_dir.join("unknown")
+        } else {
+            self.output_dir.join(language.to_lowercase())
+        };
+        std::fs::create_dir_all(&language_dir)?;
+        let session_dir = language_dir.join(format!("session_{}_{}", timestamp, random_id));
         std::fs::create_dir_all(&session_dir)?;
 
         // Generate summary report

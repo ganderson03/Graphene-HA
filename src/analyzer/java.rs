@@ -5,7 +5,7 @@ use crate::protocol::AnalyzerInfo;
 
 pub async fn create() -> Result<BridgeAnalyzer> {
     let java_path = find_java().await?;
-    let bridge_jar = std::env::current_dir()?
+    let bridge_jar = crate::analyzer::workspace_root()?
         .join("analyzers/java/target/escape-analyzer.jar")
         .to_string_lossy()
         .to_string();
