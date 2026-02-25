@@ -156,22 +156,28 @@ def _resolve_thread_prefs(args,requires_thread=False,requires_main=False):
 
 
 def _ensure_rust_binary():
-    """Build Rust binary if it doesn't exist."""
+    """Build Rust workspace if it doesn't exist."""
     root_dir=Path(__file__).resolve().parent.parent
     binary_name="graphene-ha.exe" if os.name=="nt" else "graphene-ha"
     binary_path=root_dir/"target"/"release"/binary_name
     
-    if not binary_path.exists():
-        print(f"Building Rust binary (first time only)...",file=sys.stderr)
+    # Also check for rust-analyzer which is in the workspace
+    rust_analyzer_name="rust-analyzer.exe" if os.name=="nt" else "rust-analyzer"
+    rust_analyzer_path=root_dir/"target"/"release"/rust_analyzer_name
+    
+    if not binary_path.exists() or not rust_analyzer_path.exists():
+        print(f"Building Rust workspace (first time only)...",file=sys.stderr)
         result=subprocess.run(
-            ["cargo","build","--release"],
+            ["cargo","build","--release","--workspace"],
             cwd=root_dir,
             check=False
         )
         if result.returncode!=0:
-            raise RuntimeError("Failed to build Rust binary. Run 'cargo build --release' manually.")
+            raise RuntimeError("Failed to build Rust workspace. Run 'cargo build --release --workspace' manually.")
         if not binary_path.exists():
             raise FileNotFoundError(f"Build succeeded but binary not found: {binary_path}")
+        if not rust_analyzer_path.exists():
+            raise FileNotFoundError(f"Build succeeded but rust-analyzer not found: {rust_analyzer_path}")
     
     return binary_path
 

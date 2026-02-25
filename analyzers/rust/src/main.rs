@@ -91,6 +91,8 @@ struct AnalyzeRequest {
     timeout_seconds: f64,
     #[serde(default)]
     options: std::collections::HashMap<String, String>,
+    #[serde(default)]
+    analysis_mode: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -98,6 +100,7 @@ struct AnalyzeResponse {
     session_id: String,
     language: String,
     analyzer_version: String,
+    analysis_mode: String,
     results: Vec<ExecutionResult>,
     vulnerabilities: Vec<Vulnerability>,
     summary: ExecutionSummary,
@@ -258,6 +261,7 @@ fn analyze(request: AnalyzeRequest) -> AnalyzeResponse {
         session_id: request.session_id,
         language: "rust".to_string(),
         analyzer_version: "1.0.0".to_string(),
+        analysis_mode: request.analysis_mode,
         results: Vec::new(),
         vulnerabilities: Vec::new(),
         summary: ExecutionSummary::default(),

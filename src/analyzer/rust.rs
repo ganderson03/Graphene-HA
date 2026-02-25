@@ -4,7 +4,7 @@ use crate::protocol::AnalyzerInfo;
 
 pub async fn create() -> Result<BridgeAnalyzer> {
     let bridge_binary = std::env::current_dir()?
-        .join("analyzers/rust/target/release/rust-analyzer")
+        .join("target/release/rust-analyzer")
         .to_string_lossy()
         .to_string();
 

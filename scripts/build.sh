@@ -8,10 +8,10 @@ echo "║   Building Graphene HA                     ║"
 echo "╚════════════════════════════════════════════╝"
 echo ""
 
-# Build Rust orchestrator
-echo "🦀 Building Rust orchestrator..."
-cargo build --release
-echo "✅ Rust orchestrator built"
+# Build entire Rust workspace (orchestrator + all analyzers)
+echo "🦀 Building Rust workspace..."
+cargo build --release --workspace
+echo "✅ Rust workspace built"
 echo ""
 
 # Build Java bridge
