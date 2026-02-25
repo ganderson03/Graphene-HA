@@ -58,6 +58,7 @@ def spawn_event_waiter(delay=2):
         event.wait()
     thread = threading.Thread(target=worker)
     thread.start()
+    event.set()  # Set the event so thread completes, but it still escapes
     return "ok"
 
 
