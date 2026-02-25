@@ -99,6 +99,18 @@ enum Commands {
         #[arg(short, long)]
         detailed: bool,
     },
+
+    /// Clear log output directories
+    #[command(name = "clear", alias = "clear-logs")]
+    Clear {
+        /// Output directory for reports
+        #[arg(short, long, default_value = "logs")]
+        output_dir: PathBuf,
+
+        /// Archive results into a single CSV file before clearing
+        #[arg(long, value_name = "PATH")]
+        archive_csv: Option<PathBuf>,
+    },
 }
 
 #[tokio::main]
@@ -138,6 +150,12 @@ async fn main() -> Result<()> {
         }
         Commands::List { detailed } => {
             orchestrator::list_analyzers(detailed).await?;
+        }
+        Commands::Clear {
+            output_dir,
+            archive_csv,
+        } => {
+            orchestrator::clear_logs(output_dir, archive_csv)?;
         }
     }
 

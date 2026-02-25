@@ -7,6 +7,7 @@ use crate::report::ReportGenerator;
 use crate::static_analyzer::StaticAnalyzerFactory;
 use std::collections::{HashMap, HashSet};
 use std::fs;
+use std::io::{BufRead, BufReader, Write};
 use tracing::{info, warn, error};
 
 pub async fn analyze_target(
@@ -307,6 +308,97 @@ pub async fn list_analyzers(detailed: bool) -> Result<()> {
     }
 
     Ok(())
+}
+
+pub fn clear_logs(output_dir: PathBuf, archive_csv: Option<PathBuf>) -> Result<()> {
+    if !output_dir.exists() {
+        return Ok(());
+    }
+    if !output_dir.is_dir() {
+        anyhow::bail!("Output path is not a directory: {}", output_dir.display());
+    }
+
+    if let Some(ref archive_path) = archive_csv {
+        archive_results(&output_dir, archive_path)?;
+    }
+
+    for entry in fs::read_dir(&output_dir)
+        .with_context(|| format!("Failed to read log directory: {}", output_dir.display()))?
+    {
+        let path = entry?.path();
+        if let Some(ref archive_path) = archive_csv {
+            if same_path(&path, archive_path) {
+                continue;
+            }
+        }
+        if path.is_dir() {
+            fs::remove_dir_all(&path)
+                .with_context(|| format!("Failed to remove directory: {}", path.display()))?;
+        } else {
+            fs::remove_file(&path)
+                .with_context(|| format!("Failed to remove file: {}", path.display()))?;
+        }
+    }
+
+    Ok(())
+}
+
+fn archive_results(output_dir: &PathBuf, archive_path: &PathBuf) -> Result<()> {
+    if let Some(parent) = archive_path.parent() {
+        if !parent.exists() {
+            fs::create_dir_all(parent)
+                .with_context(|| format!("Failed to create archive directory: {}", parent.display()))?;
+        }
+    }
+
+    let mut file = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(archive_path)
+        .with_context(|| format!("Failed to open archive file: {}", archive_path.display()))?;
+
+    if file.metadata()?.len() == 0 {
+        file.write_all(b"session_path,input,success,crashed,escape_detected,escape_summary,error,execution_time_ms\n")?;
+    }
+
+    let mut csv_files = collect_files_recursive(output_dir, "csv")?;
+    csv_files.retain(|path| path.file_name().and_then(|name| name.to_str()) == Some("results.csv"));
+
+    for csv_path in csv_files {
+        if same_path(&csv_path, archive_path) {
+            continue;
+        }
+        let session_path = csv_path
+            .parent()
+            .and_then(|p| p.strip_prefix(output_dir).ok())
+            .map(|p| p.to_string_lossy().replace('\\', "/"))
+            .unwrap_or_else(|| "unknown".to_string());
+        let session_field = format!("\"{}\"", session_path.replace('"', "\"\""));
+
+        let input = fs::File::open(&csv_path)
+            .with_context(|| format!("Failed to read results file: {}", csv_path.display()))?;
+        let reader = BufReader::new(input);
+
+        for (line_index, line) in reader.lines().enumerate() {
+            let line = line?;
+            if line_index == 0 {
+                continue;
+            }
+            if line.trim().is_empty() {
+                continue;
+            }
+            file.write_all(format!("{},{}\n", session_field, line).as_bytes())?;
+        }
+    }
+
+    Ok(())
+}
+
+fn same_path(left: &PathBuf, right: &PathBuf) -> bool {
+    if let (Ok(left), Ok(right)) = (left.canonicalize(), right.canonicalize()) {
+        return left == right;
+    }
+    left == right
 }
 
 fn print_summary(response: &AnalyzeResponse) {

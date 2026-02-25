@@ -121,6 +121,9 @@ impl ReportGenerator {
     }
 
     async fn generate_vulnerability_report(&self, dir: &PathBuf, response: &AnalyzeResponse) -> Result<()> {
+        if response.vulnerabilities.is_empty() {
+            return Ok(());
+        }
         let path = dir.join("vulnerabilities.md");
 
         let mut content = String::from("# Vulnerability Report\n\n");

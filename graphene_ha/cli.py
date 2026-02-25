@@ -97,6 +97,19 @@ def _run_list(args):
     return result.returncode
 
 
+def _run_clear(args):
+    """Delegate clear command to Rust binary."""
+    binary_path=_ensure_rust_binary()
+    
+    cmd=[str(binary_path),"clear","--output-dir",args.log_dir]
+    
+    if args.archive_csv:
+        cmd.extend(["--archive-csv",args.archive_csv])
+    
+    result=subprocess.run(cmd,check=False)
+    return result.returncode
+
+
 def main():
     parser=argparse.ArgumentParser(
         prog="graphene",
@@ -108,6 +121,8 @@ def main():
   uv run graphene run-all --language python
   uv run graphene run-all --generate 10
   uv run graphene list --detailed
+  uv run graphene clear --log-dir logs
+  uv run graphene clear --log-dir logs --archive-csv logs/cleared_results.csv
 """
     )
     
@@ -135,6 +150,11 @@ def main():
     # List command
     list_parser=subparsers.add_parser("list",help="List available analyzers")
     list_parser.add_argument("--detailed",action="store_true",help="Show detailed analyzer capabilities")
+
+    # Clear command
+    clear_parser=subparsers.add_parser("clear",help="Clear log output directories")
+    clear_parser.add_argument("--log-dir",default="logs",help="Output directory for reports (default: logs)")
+    clear_parser.add_argument("--archive-csv",help="Archive results into a single CSV file before clearing")
     
     args=parser.parse_args()
     
@@ -149,6 +169,8 @@ def main():
         return _run_run_all(args)
     elif args.command=="list":
         return _run_list(args)
+    elif args.command=="clear":
+        return _run_clear(args)
     
     return 1
 
