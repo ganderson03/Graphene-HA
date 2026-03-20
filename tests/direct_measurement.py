@@ -1,200 +1,131 @@
 #!/usr/bin/env python3
 """
-Direct escape detection measurement (bypass CLI issues).
-Tests detection by running harness directly.
+Direct split-case measurement using the Python function test harness.
 """
 
-import sys
-import os
+from __future__ import annotations
+
+import argparse
+import importlib.util
+import re
+from dataclasses import dataclass
 from pathlib import Path
 
-# Add paths
-sys.path.insert(0, str(Path(__file__).parent.parent))
-sys.path.insert(0, str(Path(__file__).parent / "python"))
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from graphene_ha.test_harness import PythonFunctionTestHarness
-from graphene_ha.vulnerability_detector import VulnerabilityDetector
-from collections import defaultdict
-
-# Import test modules
-import escape_threads
-import no_escape
-import escape_process
-import escape_executor
-import escape_pool
-import advanced_escapes
 
 
-# Test definitions: (module, function_name, should_detect_escape, description)
-PYTHON_TESTS = [
-    # Basic escapes - should detect
-    (escape_threads, "spawn_non_daemon_thread", True, "Basic thread spawn"),
-    (escape_threads, "spawn_daemon_thread", True, "Daemon thread"),
-    (escape_threads, "spawn_timer_thread", True, "Timer thread"),
-    (escape_threads, "spawn_named_thread", True, "Named thread"),
-    (escape_threads, "spawn_multiple_threads", True, "Multiple threads"),
-    
-    # Process escapes - should detect
-    (escape_process, "spawn_process", True, "Basic process"),
-    (escape_process, "spawn_daemon_process", True, "Daemon process"),
-    
-    # Executor escapes - should detect
-    (escape_executor, "leak_executor", True, "Leaked executor"),
-    (escape_executor, "leak_new_executor", True, "New executor leak"),
-    
-    # Non-escapes - should NOT detect
-    (no_escape, "no_threads", False, "No threads"),
-    (no_escape, "join_thread", False, "Joined thread"),
-    (no_escape, "join_daemon_thread", False, "Joined daemon"),
-    (no_escape, "join_multiple_threads", False, "Joined multiple"),
-    
-    # Advanced escapes - should detect
-    (advanced_escapes, "spawn_thread_via_function_ref", True, "Obfuscated - function ref"),
-    (advanced_escapes, "spawn_thread_conditionally", True, "Conditional spawn"),
-    (advanced_escapes, "spawn_thread_with_dynamic_key", True, "Dynamic key storage"),
-    (advanced_escapes, "spawn_thread_weak_reference", True, "Weak reference"),
-    (advanced_escapes, "leak_executor_on_exception", True, "Executor on exception"),
-    (advanced_escapes, "spawn_process_without_join", True, "Process without join"),
-    (advanced_escapes, "leak_pool_incrementally", True, "Pool leak incrementally"),
-    (advanced_escapes, "spawn_threads_recursively", True, "Recursive threads"),
-    
-    # Advanced non-escapes - should NOT detect
-    (advanced_escapes, "properly_joined_thread", False, "Properly joined"),
-    (advanced_escapes, "properly_shutdown_executor", False, "Properly shutdown"),
-    (advanced_escapes, "daemon_thread_cleanup", False, "Daemon with cleanup"),
-]
+CASE_RE = re.compile(r"^case_(\d{3})_(.+)\.py$")
 
 
-def run_test(module, func_name, should_detect, description):
-    """Run a single test"""
-    try:
-        func = getattr(module, func_name)
-        
-        # Run test
-        harness = PythonFunctionTestHarness(func, timeout=3.0, prefer_main_thread=False)
-        result = harness.run_test("test_input")
-        
-        # Detect escape
-        detected = result.escape_detected or (result.error and "timeout" in result.error.lower())
-        
-        return (detected, should_detect, detected == should_detect, None)
-    except Exception as e:
-        return (False, should_detect, False, str(e))
+@dataclass
+class CaseDef:
+    file_path: Path
+    function_name: str
+    expected_escape: bool
+
+
+def expected_escape(file_path: Path) -> bool:
+    return "SAFE:" not in file_path.read_text(encoding="utf-8")
+
+
+def load_case_function(file_path: Path, function_name: str):
+    module_name = f"split_case_{file_path.stem}"
+    spec = importlib.util.spec_from_file_location(module_name, file_path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"unable to load module for {file_path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return getattr(module, function_name)
+
+
+def collect_cases(root: Path, limit: int):
+    cases_dir = root / "tests" / "python" / "cases"
+    collected = []
+    for file_path in sorted(cases_dir.glob("case_*.py")):
+        match = CASE_RE.match(file_path.name)
+        if not match:
+            continue
+        collected.append(
+            CaseDef(
+                file_path=file_path,
+                function_name=file_path.stem,
+                expected_escape=expected_escape(file_path),
+            )
+        )
+        if limit and len(collected) >= limit:
+            break
+    return collected
+
+
+def run_case(case: CaseDef):
+    fn = load_case_function(case.file_path, case.function_name)
+    harness = PythonFunctionTestHarness(fn, timeout=3.0, prefer_main_thread=False)
+    result = harness.run_test("sample")
+    detected = bool(result.escape_detected or (result.error and "timeout" in result.error.lower()))
+    return detected, result.error or ""
 
 
 def main():
-    print("=" * 75)
-    print("ESCAPE DETECTION SUCCESS RATE ANALYSIS")
-    print("=" * 75)
-    
-    stats = {
-        "tp": 0,  # True Positive
-        "tn": 0,  # True Negative
-        "fp": 0,  # False Positive
-        "fn": 0,  # False Negative
-    }
-    
-    categories = defaultdict(lambda: {"tp": 0, "tn": 0, "fp": 0, "fn": 0, "total": 0})
-    
-    print("\nRunning Tests:")
-    print("-" * 75)
-    
-    for i, (module, func_name, should_detect, description) in enumerate(PYTHON_TESTS, 1):
-        print(f"[{i:2d}/{len(PYTHON_TESTS):2d}]  {func_name:35} ", end="", flush=True)
-        
-        detected, expected, correct, error = run_test(module, func_name, should_detect, description)
-        
-        if error:
-            print(f"❌ ERROR: {error[:40]}")
+    parser = argparse.ArgumentParser(description="Direct harness measurement for split Python cases")
+    parser.add_argument("--limit", type=int, default=20, help="How many cases to test (default: 20)")
+    args = parser.parse_args()
+
+    root = Path(__file__).resolve().parent.parent
+    cases = collect_cases(root, args.limit)
+
+    print("=" * 78)
+    print(f"DIRECT HARNESS MEASUREMENT ({len(cases)} CASES)")
+    print("=" * 78)
+
+    tp = tn = fp = fn = 0
+
+    for idx, case in enumerate(cases, 1):
+        print(f"[{idx:02d}/{len(cases):02d}] {case.function_name:36}", end=" ", flush=True)
+        detected, error = run_case(case)
+
+        if error and "timeout" not in error.lower():
+            print(f"ERROR ({error})")
             continue
-        
-        # Classify result
+
+        expected = case.expected_escape
         if expected and detected:
-            result_type = "TP"
-            stats["tp"] += 1
-            symbol = "✓"
+            tp += 1
+            status = "TP"
+            ok = "PASS"
         elif not expected and not detected:
-            result_type = "TN"
-            stats["tn"] += 1
-            symbol = "✓"
+            tn += 1
+            status = "TN"
+            ok = "PASS"
         elif expected and not detected:
-            result_type = "FN"
-            stats["fn"] += 1
-            symbol = "✗"
+            fn += 1
+            status = "FN"
+            ok = "FAIL"
         else:
-            result_type = "FP"
-            stats["fp"] += 1
-            symbol = "✗"
-        
-        # Category tracking
-        cat = "escape" if expected else "clean"
-        categories[cat]["total"] += 1
-        categories[cat][result_type.lower()] += 1
-        
-        expected_str = "ESCAPE" if expected else "CLEAN"
-        detected_str = "ESCAPE" if detected else "CLEAN"
-        
-        print(f"{symbol} [{result_type:2}] {expected_str:8} -> {detected_str:8}  {description}")
-    
-    # Summary statistics
-    print("\n" + "=" * 75)
-    print("RESULTS SUMMARY")
-    print("=" * 75)
-    
-    total = sum(stats.values())
-    correct = stats["tp"] + stats["tn"]
-    accuracy = (correct / total * 100) if total > 0 else 0
-    
-    # Escape detection metrics
-    escape_count = stats["tp"] + stats["fn"]
-    precision = stats["tp"] / (stats["tp"] + stats["fp"]) if (stats["tp"] + stats["fp"]) > 0 else 0
-    recall = stats["tp"] / escape_count if escape_count > 0 else 0
-    f1 = 2 * (precision * recall) / (precision + recall) if (precision + recall) > 0 else 0
-    
-    print(f"\nOverall Accuracy: {accuracy:.1f}% ({correct}/{total})")
-    print(f"\nClassification Breakdown:")
-    print(f"  ✓ True Positives  (TP): {stats['tp']:3} - Correctly detected escapes")
-    print(f"  ✓ True Negatives  (TN): {stats['tn']:3} - Correctly identified clean code")
-    print(f"  ✗ False Positives (FP): {stats['fp']:3} - Incorrectly flagged as escape")
-    print(f"  ✗ False Negatives (FN): {stats['fn']:3} - Missed escape detection")
-    
-    print(f"\nEscape Detection Metrics:")
-    print(f"  Precision (TP/(TP+FP)): {precision:.1%} - When detector flags escape, is it correct?")
-    print(f"  Recall (TP/(TP+FN)):    {recall:.1%} - How many escapes does detector catch?")
-    print(f"  F1-Score:               {f1:.3f}  - Harmonic mean of precision & recall")
-    
-    print(f"\nDetection Rate by Category:")
-    for cat in ["escape", "clean"]:
-        if categories[cat]["total"] > 0:
-            cat_stats = categories[cat]
-            cat_acc = (cat_stats["tp"] + cat_stats["tn"]) / cat_stats["total"]
-            label = "Escape Detection" if cat == "escape" else "False Negative Avoidance"
-            print(f"  {label:30} {cat_acc:.1%} ({cat_stats['tp'] + cat_stats['tn']}/{cat_stats['total']})")
-    
-    print("\n" + "=" * 75)
-    print("KEY INSIGHTS")
-    print("=" * 75)
-    
-    if recall < 0.5:
-        print("⚠️  LOW RECALL: Detector is missing many actual escapes")
-        print("    This is concerning - the system needs to catch escapes reliably")
-    elif recall > 0.8:
-        print("✓ GOOD RECALL: Detector catches most actual escapes")
-    
-    if precision < 0.5:
-        print("⚠️  LOW PRECISION: Many false alarms / incorrect detections")
-        print("    This can lead to false confidence or debugging misdirection")
-    elif precision > 0.8:
-        print("✓ GOOD PRECISION: Detections are usually correct")
-    
-    if f1 < 0.6:
-        print("⚠️  SYSTEM NEEDS IMPROVEMENT")
-        print("    Current detection is not reliable enough for production use")
-    elif f1 > 0.8:
-        print("✓ SYSTEM PERFORMS WELL")
-        print("    Detector shows good balance of recall and precision")
-    
-    print("=" * 75)
+            fp += 1
+            status = "FP"
+            ok = "FAIL"
+
+        expected_label = "ESCAPE" if expected else "SAFE"
+        actual_label = "ESCAPE" if detected else "SAFE"
+        print(f"{ok:4} [{status}] expected={expected_label:6} actual={actual_label:6}")
+
+    total = tp + tn + fp + fn
+    accuracy = ((tp + tn) / total) if total else 0.0
+    precision = (tp / (tp + fp)) if (tp + fp) else 0.0
+    recall = (tp / (tp + fn)) if (tp + fn) else 0.0
+
+    print("\n" + "=" * 78)
+    print("SUMMARY")
+    print("=" * 78)
+    print(f"Total: {total}")
+    print(f"TP: {tp}  TN: {tn}  FP: {fp}  FN: {fn}")
+    print(f"Accuracy:  {accuracy:.1%}")
+    print(f"Precision: {precision:.1%}")
+    print(f"Recall:    {recall:.1%}")
 
 
 if __name__ == "__main__":

@@ -158,8 +158,9 @@ fn analyze_function(
         if !joined_handles.contains(&handle) {
             // Find the line where this handle was created
             if let Some(line_num) = find_variable_line(source, function_name, &handle) {
+                let reason = format!("Thread/task handle '{}' created but not joined", handle);
                 escapes.push(StaticEscape {
-                    escape_type: EscapeType::ConcurrencyEscape,
+                    escape_type: classify_rust_async_escape(None, &reason, &handle),
                     location: SourceLocation {
                         file: source_file.to_string(),
                         line: line_num,
@@ -168,7 +169,7 @@ fn analyze_function(
                         code_snippet: None,
                     },
                     variable_name: handle.clone(),
-                    reason: format!("Thread/task handle '{}' created but not joined", handle),
+                    reason,
                     confidence: ConfidenceLevel::High,
                     data_flow: vec![],
                 });
@@ -338,8 +339,9 @@ fn detect_concurrency(
     for (pattern, reason) in patterns {
         if line.contains(pattern) {
             let column = line.find(pattern).unwrap_or(0);
+            let reason_text = format!("{} may leak work beyond scope", reason);
             return Some(StaticEscape {
-                escape_type: EscapeType::ConcurrencyEscape,
+                escape_type: classify_rust_async_escape(Some(line), &reason_text, pattern),
                 location: SourceLocation {
                     file: source_file.to_string(),
                     line: line_number,
@@ -348,7 +350,7 @@ fn detect_concurrency(
                     code_snippet: Some(line.trim().to_string()),
                 },
                 variable_name: pattern.to_string(),
-                reason: format!("{} may leak work beyond scope", reason),
+                reason: reason_text,
                 confidence: ConfidenceLevel::High,
                 data_flow: vec![],
             });
@@ -427,4 +429,25 @@ fn find_variable_line(source: &str, function_name: &str, var_name: &str) -> Opti
         }
     }
     None
+}
+
+fn classify_rust_async_escape(line: Option<&str>, reason: &str, variable_name: &str) -> EscapeType {
+    let combined = format!("{} {} {}", reason, variable_name, line.unwrap_or_default()).to_lowercase();
+
+    if combined.contains("return") || combined.contains("returned") {
+        EscapeType::ReturnEscape
+    } else if combined.contains("global") || combined.contains("static ") {
+        EscapeType::GlobalEscape
+    } else if combined.contains("move ||")
+        || combined.contains("async move")
+        || combined.contains("closure")
+        || combined.contains(" capture")
+    {
+        EscapeType::ClosureEscape
+    } else if combined.contains("spawn(") || combined.contains("parameter") || combined.contains("argument") {
+        EscapeType::ParameterEscape
+    } else {
+        // Unjoined handles and runtime task state are treated as heap-backed object escapes.
+        EscapeType::HeapEscape
+    }
 }

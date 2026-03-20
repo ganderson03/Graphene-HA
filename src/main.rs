@@ -11,7 +11,7 @@ use crate::protocol::AnalysisMode;
 
 #[derive(Parser)]
 #[command(name = "graphene-ha")]
-#[command(about = "Graphene HA - Multi-language concurrency escape detection", long_about = None)]
+#[command(about = "Graphene HA - Static object escape analysis for multi-language codebases", long_about = None)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -19,10 +19,10 @@ struct Cli {
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
 enum CliAnalysisMode {
-    /// Dynamic runtime analysis (default)
-    Dynamic,
-    /// Static compile-time analysis
+    /// Static compile-time analysis (recommended for object escape analysis)
     Static,
+    /// Dynamic runtime analysis
+    Dynamic,
     /// Both static and dynamic analysis
     Both,
 }
@@ -39,7 +39,7 @@ impl From<CliAnalysisMode> for AnalysisMode {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Analyze a function for concurrency escapes
+    /// Analyze a function for object escapes
     Analyze {
         /// Target function in format: module:function or file.ext:function
         #[arg(short, long)]
@@ -65,7 +65,7 @@ enum Commands {
         #[arg(short, long)]
         language: Option<String>,
 
-        /// Analysis mode: dynamic (runtime), static (compile-time), or both
+        /// Analysis mode: dynamic, static, or both. A runtime self-check runs before analysis to report missing analyzers.
         #[arg(short = 'm', long, default_value = "both")]
         analysis_mode: CliAnalysisMode,
 

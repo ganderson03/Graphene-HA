@@ -128,7 +128,11 @@ impl From<JsEscape> for StaticEscape {
             "global" => EscapeType::GlobalEscape,
             "closure" => EscapeType::ClosureEscape,
             "heap" => EscapeType::HeapEscape,
-            "concurrency" => EscapeType::ConcurrencyEscape,
+            "concurrency" => classify_js_concurrency_escape(
+                &je.reason,
+                &je.variable_name,
+                je.code_snippet.as_deref(),
+            ),
             _ => EscapeType::UnknownEscape,
         };
         
@@ -152,6 +156,40 @@ impl From<JsEscape> for StaticEscape {
             confidence,
             data_flow: vec![],
         }
+    }
+}
+
+fn classify_js_concurrency_escape(
+    reason: &str,
+    variable_name: &str,
+    code_snippet: Option<&str>,
+) -> EscapeType {
+    let combined = format!(
+        "{} {} {}",
+        reason,
+        variable_name,
+        code_snippet.unwrap_or_default()
+    )
+    .to_lowercase();
+
+    if combined.contains("return") || combined.contains("returned") {
+        EscapeType::ReturnEscape
+    } else if combined.contains("global") || combined.contains("module") {
+        EscapeType::GlobalEscape
+    } else if combined.contains("closure")
+        || combined.contains("callback")
+        || combined.contains("lambda")
+        || combined.contains("then(")
+    {
+        EscapeType::ClosureEscape
+    } else if combined.contains("parameter")
+        || combined.contains("argument")
+        || combined.contains("passed")
+    {
+        EscapeType::ParameterEscape
+    } else {
+        // Timers/promises/nextTick/setImmediate are runtime-managed handles that outlive local scope.
+        EscapeType::HeapEscape
     }
 }
 

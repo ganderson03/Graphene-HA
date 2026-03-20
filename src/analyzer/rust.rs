@@ -1,10 +1,14 @@
 use anyhow::Result;
 use crate::analyzer::BridgeAnalyzer;
 use crate::protocol::AnalyzerInfo;
+use std::env;
 
 pub async fn create() -> Result<BridgeAnalyzer> {
+    let binary_name = format!("rust-analyzer{}", env::consts::EXE_SUFFIX);
     let bridge_binary = crate::analyzer::workspace_root()?
-        .join("target/release/rust-analyzer")
+        .join("target")
+        .join("release")
+        .join(&binary_name)
         .to_string_lossy()
         .to_string();
 
@@ -16,13 +20,7 @@ pub async fn create() -> Result<BridgeAnalyzer> {
             name: "Rust Escape Analyzer".into(),
             language: "rust".into(),
             version: "1.0.0".into(),
-            supported_features: vec![
-                "thread_detection".into(),
-                "tokio_task_tracking".into(),
-                "async_runtime_monitoring".into(),
-                "panic_recovery".into(),
-                "scoped_thread_safety".into(),
-            ],
+            supported_features: crate::analyzer::standardized_object_escape_capabilities(),
             executable_path: bridge_binary,
         },
         |target| target.ends_with(".rs") || target.contains("::"),

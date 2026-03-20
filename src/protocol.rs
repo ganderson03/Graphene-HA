@@ -6,10 +6,13 @@ use std::collections::HashMap;
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum AnalysisMode {
     /// Dynamic runtime analysis (default)
+    #[serde(rename = "Dynamic", alias = "dynamic")]
     Dynamic,
     /// Static compile-time analysis
+    #[serde(rename = "Static", alias = "static")]
     Static,
     /// Both static and dynamic analysis
+    #[serde(rename = "Both", alias = "both")]
     Both,
 }
 
@@ -35,84 +38,67 @@ pub struct AnalyzeRequest {
 /// Single test execution result
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExecutionResult {
+    #[serde(alias = "inputData")]
     pub input_data: String,
     pub success: bool,
     pub crashed: bool,
     pub output: String,
     pub error: String,
+    #[serde(alias = "executionTimeMs")]
     pub execution_time_ms: u64,
+    #[serde(alias = "escapeDetected")]
     pub escape_detected: bool,
+    #[serde(alias = "escapeDetails")]
     pub escape_details: EscapeDetails,
 }
 
-/// Detailed escape information
+/// Detailed escape information for object escape analysis
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EscapeDetails {
-    pub threads: Vec<ThreadEscape>,
-    pub processes: Vec<ProcessEscape>,
-    pub async_tasks: Vec<AsyncTaskEscape>,
-    pub goroutines: Vec<GoroutineEscape>,
-    pub other: Vec<String>,
+    #[serde(default, alias = "escapingReferences")]
+    pub escaping_references: Vec<ObjectReference>,
+    #[serde(default, alias = "escapePaths")]
+    pub escape_paths: Vec<EscapePath>,
 }
 
 impl EscapeDetails {
     pub fn is_empty(&self) -> bool {
-        self.threads.is_empty()
-            && self.processes.is_empty()
-            && self.async_tasks.is_empty()
-            && self.goroutines.is_empty()
-            && self.other.is_empty()
+        self.escaping_references.is_empty() && self.escape_paths.is_empty()
     }
 
     pub fn summary(&self) -> String {
-        let mut parts = vec![];
-        if !self.threads.is_empty() {
-            parts.push(format!("{} thread(s)", self.threads.len()));
+        if self.escaping_references.is_empty() {
+            return "No escaping references detected".to_string();
         }
-        if !self.processes.is_empty() {
-            parts.push(format!("{} process(es)", self.processes.len()));
-        }
-        if !self.async_tasks.is_empty() {
-            parts.push(format!("{} async task(s)", self.async_tasks.len()));
-        }
-        if !self.goroutines.is_empty() {
-            parts.push(format!("{} goroutine(s)", self.goroutines.len()));
-        }
-        if !self.other.is_empty() {
-            parts.push(format!("{} other", self.other.len()));
-        }
-        parts.join(", ")
+        format!(
+            "{} escaping object(s) via {} path(s)",
+            self.escaping_references.len(),
+            self.escape_paths.len()
+        )
     }
 }
 
+/// A reference to an object that escaped local scope
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ThreadEscape {
-    pub thread_id: String,
-    pub name: String,
-    pub is_daemon: bool,
-    pub state: String,
-    pub stack_trace: Option<Vec<String>>,
+pub struct ObjectReference {
+    #[serde(alias = "variableName")]
+    pub variable_name: String,
+    #[serde(alias = "objectType")]
+    pub object_type: String,
+    #[serde(alias = "allocationSite")]
+    pub allocation_site: String,
+    #[serde(alias = "escapedVia")]
+    pub escaped_via: String, // return, parameter, global, closure, heap, etc.
 }
 
+/// A path describing how an object escaped
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ProcessEscape {
-    pub pid: u32,
-    pub name: String,
-    pub cmdline: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AsyncTaskEscape {
-    pub task_id: String,
-    pub task_type: String,
-    pub state: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct GoroutineEscape {
-    pub goroutine_id: u64,
-    pub state: String,
-    pub function: String,
+pub struct EscapePath {
+    pub source: String,
+    pub destination: String,
+    #[serde(alias = "escapeType")]
+    pub escape_type: String,
+    pub confidence: String,
 }
 
 /// Static escape analysis results
@@ -142,16 +128,14 @@ pub struct StaticEscape {
 pub enum EscapeType {
     /// Variable returned from function
     ReturnEscape,
-    /// Variable passed to another function
+    /// Variable passed to another function as parameter
     ParameterEscape,
     /// Variable stored in global/module scope
     GlobalEscape,
     /// Variable captured in closure/lambda
     ClosureEscape,
-    /// Variable stored in heap-allocated structure
+    /// Variable stored in heap-allocated structure or container
     HeapEscape,
-    /// Thread/concurrency primitive created
-    ConcurrencyEscape,
     /// Unknown escape pattern
     UnknownEscape,
 }
@@ -183,7 +167,6 @@ pub struct StaticEscapeSummary {
     pub global_escapes: usize,
     pub closure_escapes: usize,
     pub heap_escapes: usize,
-    pub concurrency_escapes: usize,
     pub high_confidence: usize,
     pub medium_confidence: usize,
     pub low_confidence: usize,
@@ -198,7 +181,6 @@ impl StaticEscapeSummary {
             global_escapes: 0,
             closure_escapes: 0,
             heap_escapes: 0,
-            concurrency_escapes: 0,
             high_confidence: 0,
             medium_confidence: 0,
             low_confidence: 0,
@@ -213,7 +195,6 @@ impl StaticEscapeSummary {
             EscapeType::GlobalEscape => self.global_escapes += 1,
             EscapeType::ClosureEscape => self.closure_escapes += 1,
             EscapeType::HeapEscape => self.heap_escapes += 1,
-            EscapeType::ConcurrencyEscape => self.concurrency_escapes += 1,
             EscapeType::UnknownEscape => {},
         }
         match escape.confidence {
@@ -227,9 +208,12 @@ impl StaticEscapeSummary {
 /// Response from analyzer
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AnalyzeResponse {
+    #[serde(default, alias = "sessionId")]
     pub session_id: String,
     pub language: String,
+    #[serde(alias = "analyzerVersion")]
     pub analyzer_version: String,
+    #[serde(default, alias = "analysisMode")]
     pub analysis_mode: AnalysisMode,
     pub results: Vec<ExecutionResult>,
     pub vulnerabilities: Vec<Vulnerability>,
@@ -241,20 +225,25 @@ pub struct AnalyzeResponse {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Vulnerability {
     pub input: String,
+    #[serde(alias = "vulnerabilityType")]
     pub vulnerability_type: String,
     pub severity: String,
     pub description: String,
+    #[serde(alias = "escapeDetails")]
     pub escape_details: EscapeDetails,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExecutionSummary {
+    #[serde(alias = "totalTests")]
     pub total_tests: usize,
     pub successes: usize,
     pub crashes: usize,
     pub timeouts: usize,
     pub escapes: usize,
+    #[serde(alias = "genuineEscapes")]
     pub genuine_escapes: usize,
+    #[serde(alias = "crashRate")]
     pub crash_rate: f64,
 }
 
@@ -264,7 +253,9 @@ pub struct AnalyzerInfo {
     pub name: String,
     pub language: String,
     pub version: String,
+    #[serde(alias = "supportedFeatures")]
     pub supported_features: Vec<String>,
+    #[serde(alias = "executablePath")]
     pub executable_path: String,
 }
 

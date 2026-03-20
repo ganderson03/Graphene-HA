@@ -128,7 +128,11 @@ impl From<PythonEscape> for StaticEscape {
             "global" => EscapeType::GlobalEscape,
             "closure" => EscapeType::ClosureEscape,
             "heap" => EscapeType::HeapEscape,
-            "concurrency" => EscapeType::ConcurrencyEscape,
+            "concurrency" => classify_python_concurrency_escape(
+                &pe.reason,
+                &pe.variable_name,
+                pe.code_snippet.as_deref(),
+            ),
             _ => EscapeType::UnknownEscape,
         };
         
@@ -152,6 +156,41 @@ impl From<PythonEscape> for StaticEscape {
             confidence,
             data_flow: vec![],
         }
+    }
+}
+
+fn classify_python_concurrency_escape(
+    reason: &str,
+    variable_name: &str,
+    code_snippet: Option<&str>,
+) -> EscapeType {
+    let combined = format!(
+        "{} {} {}",
+        reason,
+        variable_name,
+        code_snippet.unwrap_or_default()
+    )
+    .to_lowercase();
+
+    if combined.contains("return") || combined.contains("returned") {
+        EscapeType::ReturnEscape
+    } else if combined.contains("global") || combined.contains("module") || combined.contains("singleton") {
+        EscapeType::GlobalEscape
+    } else if combined.contains("closure")
+        || combined.contains("lambda")
+        || combined.contains("capture")
+        || combined.contains("nonlocal")
+    {
+        EscapeType::ClosureEscape
+    } else if combined.contains("parameter")
+        || combined.contains("argument")
+        || combined.contains("passed")
+        || combined.contains("callee")
+    {
+        EscapeType::ParameterEscape
+    } else {
+        // Default for thread/process/executor leaks: object outlives scope via runtime-owned heap state.
+        EscapeType::HeapEscape
     }
 }
 

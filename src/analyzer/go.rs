@@ -18,12 +18,7 @@ pub async fn create() -> Result<BridgeAnalyzer> {
             name: "Go Escape Analyzer".into(),
             language: "go".into(),
             version: "1.0.0".into(),
-            supported_features: vec![
-                "goroutine_detection".into(),
-                "runtime_monitoring".into(),
-                "channel_tracking".into(),
-                "context_cancellation".into(),
-            ],
+            supported_features: crate::analyzer::standardized_object_escape_capabilities(),
             executable_path: "go".into(),
         },
         |target| target.ends_with(".go"),

@@ -86,6 +86,17 @@ dmypy.json
 logs/
 *.log
 
+# Dashboard rendering artifacts
+/performance_dashboard.html
+/performance_*.png
+/performance_*.jpg
+/performance_*.jpeg
+/performance_*.svg
+/performance_*.webp
+/performance_*.gif
+/performance_*.mp4
+/performance_*.webm
+
 # Environment
 .env
 .venv

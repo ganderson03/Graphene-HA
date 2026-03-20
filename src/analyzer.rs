@@ -4,7 +4,15 @@ use std::process::Stdio;
 use std::path::PathBuf;
 use tokio::process::Command;
 use tokio::io::AsyncWriteExt;
-use crate::protocol::{AnalyzeRequest, AnalyzeResponse, AnalyzerInfo, HealthCheckResponse};
+use crate::protocol::{
+    AnalyzeRequest,
+    AnalyzeResponse,
+    AnalyzerInfo,
+    EscapeDetails,
+    ExecutionResult,
+    ExecutionSummary,
+    HealthCheckResponse,
+};
 
 /// Find workspace root by looking for Cargo.toml or using executable location
 pub fn workspace_root() -> Result<PathBuf> {
@@ -34,6 +42,17 @@ pub fn workspace_root() -> Result<PathBuf> {
     }
     
     anyhow::bail!("Could not find workspace root (no Cargo.toml found)")
+}
+
+/// Standardized object escape capabilities exposed by all language analyzers.
+pub fn standardized_object_escape_capabilities() -> Vec<String> {
+    vec![
+        "return_escape_detection".to_string(),
+        "parameter_escape_detection".to_string(),
+        "global_escape_detection".to_string(),
+        "closure_escape_detection".to_string(),
+        "heap_escape_detection".to_string(),
+    ]
 }
 
 /// Trait for language-specific analyzers
@@ -96,20 +115,366 @@ impl BridgeAnalyzer {
             .with_context(|| format!("Failed to spawn {} analyzer", self.lang))?;
 
         if let Some(mut stdin) = child.stdin.take() {
-            stdin.write_all(request_json.as_bytes()).await?;
-            stdin.flush().await?;
+            if let Err(err) = stdin.write_all(request_json.as_bytes()).await {
+                return Ok(self.synthetic_bridge_failure_response(
+                    request,
+                    &format!("Failed writing request to {} bridge stdin: {}", self.lang, err),
+                ));
+            }
+            if let Err(err) = stdin.flush().await {
+                return Ok(self.synthetic_bridge_failure_response(
+                    request,
+                    &format!("Failed flushing request to {} bridge stdin: {}", self.lang, err),
+                ));
+            }
             drop(stdin);
+        } else {
+            return Ok(self.synthetic_bridge_failure_response(
+                request,
+                &format!("{} bridge stdin was unavailable", self.lang),
+            ));
         }
 
-        let output = child.wait_with_output().await?;
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            anyhow::bail!("{} analyzer failed: {}", self.lang, stderr);
+        let output = match child.wait_with_output().await {
+            Ok(output) => output,
+            Err(err) => {
+                return Ok(self.synthetic_bridge_failure_response(
+                    request,
+                    &format!("Failed waiting for {} bridge output: {}", self.lang, err),
+                ));
+            }
+        };
+
+        let stdout_text = String::from_utf8_lossy(&output.stdout).to_string();
+        let stderr_text = String::from_utf8_lossy(&output.stderr).to_string();
+        let fallback_error = pick_bridge_failure_message(
+            Some(output.status),
+            &stderr_text,
+            &stdout_text,
+        );
+
+        if let Some(parsed) = self.try_parse_bridge_response(&stdout_text) {
+            return Ok(self.normalize_bridge_response(request, parsed, Some(&fallback_error)));
         }
 
-        serde_json::from_slice(&output.stdout)
-            .with_context(|| format!("Failed to parse {} analyzer response", self.lang))
+        if let Some(parsed) = self.try_parse_bridge_response(&stderr_text) {
+            return Ok(self.normalize_bridge_response(request, parsed, Some(&fallback_error)));
+        }
+
+        if output.status.success() {
+            return Ok(self.synthetic_bridge_failure_response(
+                request,
+                &format!(
+                    "Failed to parse {} bridge response JSON from stdout/stderr. {}",
+                    self.lang,
+                    fallback_error
+                ),
+            ));
+        }
+
+        Ok(self.synthetic_bridge_failure_response(request, &fallback_error))
     }
+
+    fn try_parse_bridge_response(&self, payload: &str) -> Option<ParsedBridgeResponse> {
+        let trimmed = payload.trim();
+        if trimmed.is_empty() {
+            return None;
+        }
+
+        let mut candidates: Vec<String> = vec![trimmed.to_string()];
+        if let Some(extracted) = extract_first_json_object(trimmed) {
+            if extracted != trimmed {
+                candidates.push(extracted);
+            }
+        }
+
+        for candidate in candidates {
+            let value: serde_json::Value = match serde_json::from_str(&candidate) {
+                Ok(value) => value,
+                Err(_) => continue,
+            };
+
+            let error = value
+                .get("error")
+                .and_then(|v| v.as_str())
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty());
+
+            let response: AnalyzeResponse = match serde_json::from_value(value) {
+                Ok(response) => response,
+                Err(_) => continue,
+            };
+
+            return Some(ParsedBridgeResponse { response, error });
+        }
+
+        None
+    }
+
+    fn normalize_bridge_response(
+        &self,
+        request: &AnalyzeRequest,
+        parsed: ParsedBridgeResponse,
+        fallback_error_source: Option<&str>,
+    ) -> AnalyzeResponse {
+        let mut response = parsed.response;
+
+        if response.language.trim().is_empty() {
+            response.language = self.lang.clone();
+        }
+        if response.session_id.trim().is_empty() {
+            response.session_id = request.session_id.clone();
+        }
+
+        let mut pre_execution_error = parsed.error;
+        if pre_execution_error.as_deref().map(|s| s.trim().is_empty()).unwrap_or(true) {
+            if let Some(source) = fallback_error_source {
+                let fallback = first_nonempty_line(source);
+                if !fallback.is_empty() {
+                    pre_execution_error = Some(fallback);
+                }
+            }
+        }
+
+        if response.results.is_empty() {
+            if let Some(raw_error) = pre_execution_error {
+                let diagnosis = diagnose_bridge_failure(&raw_error);
+                response.results.push(ExecutionResult {
+                    input_data: "<bridge-startup>".to_string(),
+                    success: false,
+                    crashed: true,
+                    output: String::new(),
+                    error: format!("{}: {}", diagnosis.category, diagnosis.message),
+                    execution_time_ms: 0,
+                    escape_detected: false,
+                    escape_details: empty_escape_details(),
+                });
+
+                response.summary.total_tests = response.summary.total_tests.max(1);
+                response.summary.crashes = response.summary.crashes.max(1);
+                if diagnosis.category == "Timeout" {
+                    response.summary.timeouts = response.summary.timeouts.max(1);
+                }
+                response.summary.crash_rate = response.summary.crashes as f64
+                    / response.summary.total_tests as f64;
+            }
+        }
+
+        response
+    }
+
+    fn synthetic_bridge_failure_response(
+        &self,
+        request: &AnalyzeRequest,
+        raw_error: &str,
+    ) -> AnalyzeResponse {
+        let diagnosis = diagnose_bridge_failure(raw_error);
+
+        AnalyzeResponse {
+            session_id: request.session_id.clone(),
+            language: self.lang.clone(),
+            analyzer_version: self.analyzer_info.version.clone(),
+            analysis_mode: request.analysis_mode,
+            results: vec![ExecutionResult {
+                input_data: "<bridge-startup>".to_string(),
+                success: false,
+                crashed: true,
+                output: String::new(),
+                error: format!("{}: {}", diagnosis.category, diagnosis.message),
+                execution_time_ms: 0,
+                escape_detected: false,
+                escape_details: empty_escape_details(),
+            }],
+            vulnerabilities: vec![],
+            summary: ExecutionSummary {
+                total_tests: 1,
+                successes: 0,
+                crashes: 1,
+                timeouts: if diagnosis.category == "Timeout" { 1 } else { 0 },
+                escapes: 0,
+                genuine_escapes: 0,
+                crash_rate: 1.0,
+            },
+            static_analysis: None,
+        }
+    }
+}
+
+struct ParsedBridgeResponse {
+    response: AnalyzeResponse,
+    error: Option<String>,
+}
+
+struct BridgeErrorDiagnosis {
+    category: &'static str,
+    message: String,
+}
+
+fn diagnose_bridge_failure(raw_message: &str) -> BridgeErrorDiagnosis {
+    let message = first_nonempty_line(raw_message);
+    let lower = message.to_lowercase();
+
+    let category = if lower.contains("timeout") || lower.contains("timed out") || lower.contains("exceeded") {
+        "Timeout"
+    } else if lower.contains("target resolution")
+        || lower.contains("missing required field: 'target'")
+        || lower.contains("target loading failed")
+        || lower.contains("failed to load function")
+        || lower.contains("failed to load module")
+        || lower.contains("invalid target")
+        || lower.contains("nosuchmethod")
+        || lower.contains("module not found")
+        || lower.contains("function '") && lower.contains("not found")
+    {
+        "Target Resolution"
+    } else if lower.contains("protocol/input")
+        || lower.contains("invalid json")
+        || lower.contains("failed to parse request")
+        || lower.contains("empty input")
+        || lower.contains("expected json")
+        || lower.contains("json")
+        || lower.contains("parse")
+        || lower.contains("stdin")
+        || lower.contains("protocol")
+    {
+        "Protocol/Input"
+    } else if lower.contains("environment")
+        || lower.contains("permission denied")
+        || lower.contains("not available")
+        || lower.contains("not found in path")
+        || lower.contains("command not found")
+        || lower.contains("missing tools")
+        || lower.contains("failed to spawn")
+        || lower.contains("binary not found")
+        || lower.contains("no such file or directory")
+    {
+        "Environment"
+    } else if lower.contains("runtime crash")
+        || lower.contains("panic")
+        || lower.contains("exception")
+        || lower.contains("traceback")
+        || lower.contains("segmentation")
+    {
+        "Runtime Crash"
+    } else {
+        "Unknown"
+    };
+
+    BridgeErrorDiagnosis {
+        category,
+        message,
+    }
+}
+
+fn first_nonempty_line(message: &str) -> String {
+    message
+        .lines()
+        .find(|line| !line.trim().is_empty())
+        .unwrap_or(message)
+        .trim()
+        .to_string()
+}
+
+fn extract_first_json_object(text: &str) -> Option<String> {
+    let start = text.find('{')?;
+    let mut depth = 0usize;
+    let mut in_string = false;
+    let mut escaped = false;
+
+    for (idx, ch) in text[start..].char_indices() {
+        if in_string {
+            if escaped {
+                escaped = false;
+                continue;
+            }
+            match ch {
+                '\\' => escaped = true,
+                '"' => in_string = false,
+                _ => {}
+            }
+            continue;
+        }
+
+        match ch {
+            '"' => in_string = true,
+            '{' => depth += 1,
+            '}' => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    let end = start + idx + ch.len_utf8();
+                    return Some(text[start..end].to_string());
+                }
+            }
+            _ => {}
+        }
+    }
+
+    None
+}
+
+fn empty_escape_details() -> EscapeDetails {
+    EscapeDetails {
+        escaping_references: vec![],
+        escape_paths: vec![],
+    }
+}
+
+fn pick_bridge_failure_message(
+    status: Option<std::process::ExitStatus>,
+    stderr: &str,
+    stdout: &str,
+) -> String {
+    if let Some(line) = find_useful_error_line(stderr) {
+        return line;
+    }
+
+    if let Some(line) = find_useful_error_line(stdout) {
+        return line;
+    }
+
+    let candidate = if !stderr.trim().is_empty() {
+        stderr
+    } else if !stdout.trim().is_empty() {
+        stdout
+    } else {
+        ""
+    };
+
+    if !candidate.trim().is_empty() {
+        return first_nonempty_line(candidate);
+    }
+
+    if let Some(status) = status {
+        return format!("Bridge exited with status {}", status);
+    }
+
+    "Bridge failed with no output".to_string()
+}
+
+fn find_useful_error_line(text: &str) -> Option<String> {
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        let lower = trimmed.to_lowercase();
+        let looks_like_error = lower.starts_with("error:")
+            || lower.contains("failed")
+            || lower.contains("invalid")
+            || lower.contains("not found")
+            || lower.contains("exception")
+            || lower.contains("panic")
+            || lower.contains("timeout")
+            || lower.contains("protocol")
+            || lower.contains("json");
+
+        if looks_like_error {
+            return Some(trimmed.to_string());
+        }
+    }
+
+    None
 }
 
 #[async_trait]
@@ -153,12 +518,20 @@ impl Analyzer for BridgeAnalyzer {
 /// Factory for creating analyzers based on language or file extension
 pub struct AnalyzerRegistry {
     analyzers: Vec<Box<dyn Analyzer>>,
+    initialization_failures: Vec<AnalyzerInitializationFailure>,
+}
+
+#[derive(Debug, Clone)]
+pub struct AnalyzerInitializationFailure {
+    pub language: String,
+    pub reason: String,
 }
 
 impl AnalyzerRegistry {
     pub fn new() -> Self {
         Self {
             analyzers: Vec::new(),
+            initialization_failures: Vec::new(),
         }
     }
 
@@ -166,14 +539,36 @@ impl AnalyzerRegistry {
         self.analyzers.push(analyzer);
     }
 
+    fn record_initialization_failure(&mut self, language: &str, error: anyhow::Error) {
+        self.initialization_failures.push(AnalyzerInitializationFailure {
+            language: language.to_string(),
+            reason: error.to_string(),
+        });
+    }
+
     pub async fn initialize_all() -> Result<Self> {
         let mut registry = Self::new();
 
-        if let Ok(a) = python::create().await { registry.register(Box::new(a)); }
-        if let Ok(a) = java::create().await { registry.register(Box::new(a)); }
-        if let Ok(a) = nodejs::create().await { registry.register(Box::new(a)); }
-        if let Ok(a) = go::create().await { registry.register(Box::new(a)); }
-        if let Ok(a) = rust::create().await { registry.register(Box::new(a)); }
+        match python::create().await {
+            Ok(a) => registry.register(Box::new(a)),
+            Err(e) => registry.record_initialization_failure("python", e),
+        }
+        match java::create().await {
+            Ok(a) => registry.register(Box::new(a)),
+            Err(e) => registry.record_initialization_failure("java", e),
+        }
+        match nodejs::create().await {
+            Ok(a) => registry.register(Box::new(a)),
+            Err(e) => registry.record_initialization_failure("javascript", e),
+        }
+        match go::create().await {
+            Ok(a) => registry.register(Box::new(a)),
+            Err(e) => registry.record_initialization_failure("go", e),
+        }
+        match rust::create().await {
+            Ok(a) => registry.register(Box::new(a)),
+            Err(e) => registry.record_initialization_failure("rust", e),
+        }
 
         Ok(registry)
     }
@@ -194,6 +589,10 @@ impl AnalyzerRegistry {
 
     pub fn list_analyzers(&self) -> Vec<&dyn Analyzer> {
         self.analyzers.iter().map(|a| a.as_ref()).collect()
+    }
+
+    pub fn initialization_failures(&self) -> &[AnalyzerInitializationFailure] {
+        &self.initialization_failures
     }
 }
 
