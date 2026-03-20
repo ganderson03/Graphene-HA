@@ -6,6 +6,102 @@
 
 const fs = require('fs');
 
+const RETAINER_NAME_PATTERN = /(retained|cache|audit|handler|handlers|registry|store)/i;
+
+function extractIdentifiers(expression) {
+    return expression.match(/[A-Za-z_$][\w$]*/g) || [];
+}
+
+function looksLikeContainerInitializer(rhs) {
+    const normalized = rhs.trim();
+    return (
+        normalized.startsWith('new Map(')
+        || normalized.startsWith('new Set(')
+        || normalized.startsWith('new WeakMap(')
+        || normalized.startsWith('new WeakSet(')
+        || normalized === '[]'
+        || normalized.startsWith('[')
+        || normalized.startsWith('new Array(')
+    );
+}
+
+function looksLikeObjectInitializer(rhs) {
+    const normalized = rhs.trim();
+    return (
+        normalized.startsWith('{')
+        || normalized.startsWith('new Map(')
+        || normalized.startsWith('new Set(')
+        || normalized.startsWith('new WeakMap(')
+        || normalized.startsWith('new WeakSet(')
+        || normalized.startsWith('new Object(')
+        || normalized.startsWith('new Array(')
+        || normalized === '[]'
+        || normalized.startsWith('[')
+    );
+}
+
+function collectModuleRetainers(lines) {
+    const retainers = new Set();
+    for (const line of lines) {
+        const trimmed = line.trim();
+        const match = trimmed.match(/^(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(.+?);?$/);
+        if (!match) {
+            continue;
+        }
+        const name = match[1];
+        const rhs = match[2];
+
+        if (RETAINER_NAME_PATTERN.test(name) && looksLikeContainerInitializer(rhs)) {
+            retainers.add(name);
+        }
+    }
+    return retainers;
+}
+
+function isRetainerContainer(containerName, moduleRetainers) {
+    return moduleRetainers.has(containerName) || RETAINER_NAME_PATTERN.test(containerName);
+}
+
+function expandDependencies(varName, objectDependencies, output, visited = new Set()) {
+    if (visited.has(varName)) {
+        return;
+    }
+    visited.add(varName);
+
+    if (!objectDependencies.has(varName)) {
+        return;
+    }
+
+    for (const dependency of objectDependencies.get(varName)) {
+        if (!output.has(dependency)) {
+            output.add(dependency);
+        }
+        expandDependencies(dependency, objectDependencies, output, visited);
+    }
+}
+
+function resolveEscapedVariables(expression, localVars, localObjectVars, objectDependencies) {
+    const escapedVars = new Set();
+    const ids = extractIdentifiers(expression);
+
+    for (const id of ids) {
+        if (localVars.has(id) || localObjectVars.has(id)) {
+            escapedVars.add(id);
+            expandDependencies(id, objectDependencies, escapedVars);
+        }
+    }
+
+    return escapedVars;
+}
+
+function addEscape(escapes, dedupe, escape) {
+    const key = `${escape.escape_type}|${escape.line}|${escape.variable_name}|${escape.reason}`;
+    if (!dedupe.has(key)) {
+        dedupe.add(key);
+        escapes.push(escape);
+    }
+}
+
 /**
  * Analyze a JavaScript file for escape patterns
  */
@@ -14,6 +110,8 @@ function analyzeFile(sourceFile, functionName) {
         const source = fs.readFileSync(sourceFile, 'utf8');
         const lines = source.split('\n');
         const escapes = [];
+        const dedupe = new Set();
+        const moduleRetainers = collectModuleRetainers(lines);
         
         // Find the function
         let inTargetFunction = false;
@@ -25,6 +123,9 @@ function analyzeFile(sourceFile, functionName) {
         const awaitedPromises = new Set();
         const setTimeoutCalls = [];  // Track all setTimeout calls
         const clearTimeoutCalls = [];  // Track all clearTimeout calls
+        const localVars = new Set();
+        const localObjectVars = new Set();
+        const objectDependencies = new Map();
         
         for (let i = 0; i < lines.length; i++) {
             const line = lines[i];
@@ -46,6 +147,108 @@ function analyzeFile(sourceFile, functionName) {
                 // Count braces
                 braceDepth += (trimmed.match(/{/g) || []).length;
                 braceDepth -= (trimmed.match(/}/g) || []).length;
+
+                const assignmentMatch = trimmed.match(/(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(.+?);?$/);
+                if (assignmentMatch) {
+                    const localName = assignmentMatch[1];
+                    const rhs = assignmentMatch[2];
+                    localVars.add(localName);
+
+                    if (looksLikeObjectInitializer(rhs)) {
+                        localObjectVars.add(localName);
+                    }
+
+                    const referencedLocals = extractIdentifiers(rhs)
+                        .filter((id) => id !== localName && (localVars.has(id) || localObjectVars.has(id)));
+                    if (referencedLocals.length > 0) {
+                        objectDependencies.set(localName, new Set(referencedLocals));
+                    }
+                }
+
+                const retainedStoreCall = trimmed.match(/([A-Za-z_$][\w$]*)\.(set|push|unshift|add)\((.*)\)\s*;?$/);
+                if (retainedStoreCall) {
+                    const containerName = retainedStoreCall[1];
+                    const method = retainedStoreCall[2];
+                    const args = retainedStoreCall[3] || '';
+
+                    if (isRetainerContainer(containerName, moduleRetainers)) {
+                        const escapedVars = resolveEscapedVariables(args, localVars, localObjectVars, objectDependencies);
+                        const isClosureRetention = args.includes('=>') || args.includes('function');
+
+                        for (const escapedVar of escapedVars) {
+                            const escapeType = isClosureRetention ? 'closure' : 'global';
+                            const reason = isClosureRetention
+                                ? `Local object '${escapedVar}' captured by retained closure in '${containerName}.${method}'`
+                                : `Local object '${escapedVar}' stored in retained container '${containerName}'`;
+
+                            addEscape(escapes, dedupe, {
+                                escape_type: escapeType,
+                                line: lineNum,
+                                column: Math.max(trimmed.indexOf(containerName), 0),
+                                variable_name: escapedVar,
+                                reason,
+                                confidence: 'high',
+                                code_snippet: trimmed
+                            });
+                        }
+                    }
+                }
+
+                const retainedIndexAssignment = trimmed.match(/([A-Za-z_$][\w$]*)\s*\[[^\]]+\]\s*=\s*(.+);?$/);
+                if (retainedIndexAssignment) {
+                    const containerName = retainedIndexAssignment[1];
+                    const rhs = retainedIndexAssignment[2] || '';
+                    if (isRetainerContainer(containerName, moduleRetainers)) {
+                        const escapedVars = resolveEscapedVariables(rhs, localVars, localObjectVars, objectDependencies);
+                        for (const escapedVar of escapedVars) {
+                            addEscape(escapes, dedupe, {
+                                escape_type: 'global',
+                                line: lineNum,
+                                column: Math.max(trimmed.indexOf(containerName), 0),
+                                variable_name: escapedVar,
+                                reason: `Local object '${escapedVar}' assigned into retained container '${containerName}'`,
+                                confidence: 'high',
+                                code_snippet: trimmed
+                            });
+                        }
+                    }
+                }
+
+                const retainedDirectAssignment = trimmed.match(/^([A-Za-z_$][\w$]*)\s*=\s*(.+);?$/);
+                if (retainedDirectAssignment) {
+                    const lhs = retainedDirectAssignment[1];
+                    const rhs = retainedDirectAssignment[2] || '';
+                    if (isRetainerContainer(lhs, moduleRetainers)) {
+                        const escapedVars = resolveEscapedVariables(rhs, localVars, localObjectVars, objectDependencies);
+                        for (const escapedVar of escapedVars) {
+                            addEscape(escapes, dedupe, {
+                                escape_type: 'global',
+                                line: lineNum,
+                                column: Math.max(trimmed.indexOf(lhs), 0),
+                                variable_name: escapedVar,
+                                reason: `Local object '${escapedVar}' assigned to retained binding '${lhs}'`,
+                                confidence: 'high',
+                                code_snippet: trimmed
+                            });
+                        }
+                    }
+                }
+
+                const returnObjectMatch = trimmed.match(/^return\s+([A-Za-z_$][\w$]*)\s*;?$/);
+                if (returnObjectMatch) {
+                    const returnedName = returnObjectMatch[1];
+                    if (localObjectVars.has(returnedName) || objectDependencies.has(returnedName)) {
+                        addEscape(escapes, dedupe, {
+                            escape_type: 'return',
+                            line: lineNum,
+                            column: Math.max(trimmed.indexOf(returnedName), 0),
+                            variable_name: returnedName,
+                            reason: `Local object '${returnedName}' returned from function`,
+                            confidence: 'high',
+                            code_snippet: trimmed
+                        });
+                    }
+                }
                 
                 // Check for setTimeout without clearTimeout
                 if (trimmed.includes('setTimeout') && !trimmed.includes('await')) {
@@ -55,7 +258,7 @@ function analyzeFile(sourceFile, functionName) {
                         setTimeoutCalls.push({var: varMatch[1], line: lineNum});
                     } else {
                         // setTimeout called without storing the handle - likely a leak
-                        escapes.push({
+                        addEscape(escapes, dedupe, {
                             escape_type: 'concurrency',
                             line: lineNum,
                             column: trimmed.indexOf('setTimeout'),
@@ -74,7 +277,7 @@ function analyzeFile(sourceFile, functionName) {
                         timerHandles.add(varMatch[1]);
                         setTimeoutCalls.push({var: varMatch[1], line: lineNum});
                     } else {
-                        escapes.push({
+                        addEscape(escapes, dedupe, {
                             escape_type: 'concurrency',
                             line: lineNum,
                             column: trimmed.indexOf('setInterval'),
@@ -95,7 +298,7 @@ function analyzeFile(sourceFile, functionName) {
                 
                 // Check for process.nextTick without completion
                 if (trimmed.includes('process.nextTick')) {
-                    escapes.push({
+                    addEscape(escapes, dedupe, {
                         escape_type: 'concurrency',
                         line: lineNum,
                         column: trimmed.indexOf('process.nextTick'),
@@ -110,7 +313,7 @@ function analyzeFile(sourceFile, functionName) {
                 if (trimmed.includes('setImmediate')) {
                     const varMatch = trimmed.match(/(?:const|let|var)\s+(\w+)\s*=/);
                     if (!varMatch) {
-                        escapes.push({
+                        addEscape(escapes, dedupe, {
                             escape_type: 'concurrency',
                             line: lineNum,
                             column: trimmed.indexOf('setImmediate'),
@@ -149,7 +352,7 @@ function analyzeFile(sourceFile, functionName) {
                     // End of function - check for uncleared timers
                     for (const handle of timerHandles) {
                         if (!clearedHandles.has(handle)) {
-                            escapes.push({
+                            addEscape(escapes, dedupe, {
                                 escape_type: 'concurrency',
                                 line: lineNum,
                                 column: 0,
@@ -164,7 +367,7 @@ function analyzeFile(sourceFile, functionName) {
                     // Check for unawaited promises
                     for (const promise of unawaitedPromises) {
                         if (!awaitedPromises.has(promise)) {
-                            escapes.push({
+                            addEscape(escapes, dedupe, {
                                 escape_type: 'concurrency',
                                 line: lineNum,
                                 column: 0,

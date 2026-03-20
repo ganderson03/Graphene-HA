@@ -1,14 +1,16 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """
-Static escape analysis for Python using AST parsing.
+Static object escape analysis for Python using AST parsing.
 Detects variables that escape local scope through various mechanisms.
 """
 
 import ast
 import sys
 import json
-from typing import List, Dict, Any, Optional
+import os
+from typing import List, Dict, Any, Optional, Set, Tuple
 from dataclasses import dataclass, asdict
+from pathlib import Path
 
 
 @dataclass
@@ -22,27 +24,45 @@ class EscapeInfo:
     code_snippet: Optional[str] = None
 
 
-class EscapeAnalyzer(ast.NodeVisitor):
-    """Analyzes Python AST for variable escapes."""
+class ObjectEscapeAnalyzer(ast.NodeVisitor):
+    """Analyzes Python AST for object escape analysis.
     
-    def __init__(self, source_code: str, target_function: str):
+    Detects when objects allocated in a function escape local scope through:
+    - Return statements
+    - Parameter passing
+    - Global/module scope assignment
+    - Closure capture
+    - Heap allocation in containers/structures
+    - Concurrency primitives (threads, processes, executors) not properly joined/shutdown
+    """
+    
+    def __init__(self, source_code: str, target_function: str, source_file: str = ""):
         self.source_code = source_code
         self.source_lines = source_code.split('\n')
         self.target_function = target_function
+        self.source_file = source_file
         self.escapes: List[EscapeInfo] = []
-        self.current_function = None
-        self.local_vars = set()
-        self.nonlocal_vars = set()
-        self.global_vars = set()
+        self.current_function: Optional[str] = None
+        self.local_vars: Set[str] = set()
+        self.nonlocal_vars: Set[str] = set()
+        self.global_vars: Set[str] = set()
         self.in_target_function = False
-        # Track concurrency objects and whether they're joined
-        self.concurrency_objects = {}  # var_name -> (line, col, type)
-        self.joined_objects = set()  # var_names that have been joined
-        # Track control flow for join/cleanup in all paths
-        self.join_in_all_paths = set()  # var_names where join is called in ALL code paths
-        self.join_in_some_paths = set()  # var_names where join is called in SOME code paths
-        # Track variable reassignments
-        self.reassigned_vars = set()  # var_names that are reassigned after creation
+        # Track object allocations
+        self.allocated_objects: Dict[str, tuple] = {}  # var_name -> (line, col)
+        # Track concurrency objects and their join status
+        self.concurrency_objects: Dict[str, tuple] = {}  # var_name -> (line, col, type)
+        self.joined_objects: Set[str] = set()
+        self.join_in_all_paths: Set[str] = set()
+        self.join_in_some_paths: Set[str] = set()
+        self.reassigned_vars: Set[str] = set()
+        # Track imports for cross-file analysis
+        self.imports: Dict[str, str] = {}  # alias -> module
+        self.import_froms: Dict[str, Tuple[str, str]] = {}  # name -> (module, orig_name)
+        # Scan imports first
+        self._scan_imports()
+        self.join_in_all_paths: Set[str] = set()
+        self.join_in_some_paths: Set[str] = set()
+        self.reassigned_vars: Set[str] = set()
         
     def visit_FunctionDef(self, node: ast.FunctionDef):
         """Visit function definitions."""
@@ -51,17 +71,23 @@ class EscapeAnalyzer(ast.NodeVisitor):
         previous_locals = self.local_vars.copy()
         previous_nonlocals = self.nonlocal_vars.copy()
         previous_globals = self.global_vars.copy()
+        previous_concurrency = self.concurrency_objects.copy() if hasattr(self, 'concurrency_objects') else {}
+        previous_joined = self.join_in_all_paths.copy() if hasattr(self, 'join_in_all_paths') else set()
         
         self.current_function = node.name
         self.in_target_function = (node.name == self.target_function)
         self.local_vars = set(arg.arg for arg in node.args.args)
         self.nonlocal_vars = set()
         self.global_vars = set()
+        self.allocated_objects = {}
         
         if self.in_target_function:
             # Clear concurrency tracking for target function
             self.concurrency_objects = {}
             self.joined_objects = set()
+            self.join_in_all_paths = set()
+            self.join_in_some_paths = set()
+            self.reassigned_vars = set()
             
             # Analyze the function body
             for stmt in node.body:
@@ -69,6 +95,10 @@ class EscapeAnalyzer(ast.NodeVisitor):
             
             # Check for unjoined concurrency objects
             self._check_unjoined_concurrency()
+        else:
+            # For non-target functions, still analyze but don't track concurrency
+            for stmt in node.body:
+                self.visit(stmt)
         
         # Restore context
         self.current_function = previous_function
@@ -76,22 +106,40 @@ class EscapeAnalyzer(ast.NodeVisitor):
         self.local_vars = previous_locals
         self.nonlocal_vars = previous_nonlocals
         self.global_vars = previous_globals
+        if previous_concurrency:
+            self.concurrency_objects = previous_concurrency
+            self.join_in_all_paths = previous_joined
     
     def visit_Return(self, node: ast.Return):
         """Detect variables returned from function."""
         if not self.in_target_function or node.value is None:
             return
         
+        # Check if returning a call to function that has escapes
+        if isinstance(node.value, ast.Call):
+            if self._check_function_call_escapes(node.value):
+                self.escapes.append(EscapeInfo(
+                    escape_type="return",
+                    line=node.lineno,
+                    column=node.col_offset,
+                    variable_name="<return value>",
+                    reason=f"Returned value from function with unjoined concurrency",
+                    confidence="high",
+                    code_snippet=self._get_code_snippet(node.lineno)
+                ))
+                self.generic_visit(node)
+                return
+        
         # Check if returning a local variable or object
         returned_vars = self._extract_names(node.value)
         for var in returned_vars:
-            if var in self.local_vars:
+            if var in self.local_vars or var in self.allocated_objects:
                 self.escapes.append(EscapeInfo(
                     escape_type="return",
                     line=node.lineno,
                     column=node.col_offset,
                     variable_name=var,
-                    reason=f"Variable '{var}' returned from function",
+                    reason=f"Object '{var}' returned from function",
                     confidence="high",
                     code_snippet=self._get_code_snippet(node.lineno)
                 ))
@@ -129,35 +177,18 @@ class EscapeAnalyzer(ast.NodeVisitor):
                 ))
     
     def visit_Assign(self, node: ast.Assign):
-        """Track variable assignments."""
+        """Track variable assignments and object allocation."""
         if not self.in_target_function:
             return
         
         # Add assigned variables to local_vars
         for target in node.targets:
             names = self._extract_names(target)
-            # Track reassignments (variable reassigned after initial creation)
+            # Track reassignments
             for name in names:
                 if name in self.concurrency_objects:
                     self.reassigned_vars.add(name)
             self.local_vars.update(names)
-            
-            # Check if assigning to a global/module attribute
-            if isinstance(target, ast.Attribute) or isinstance(target, ast.Subscript):
-                # This is likely a global escape
-                target_str = ast.unparse(target) if hasattr(ast, 'unparse') else 'unknown'
-                if isinstance(node.value, ast.Call):
-                    concurrency_type = self._is_concurrency_call(node.value)
-                    if concurrency_type:
-                        self.escapes.append(EscapeInfo(
-                            escape_type="global",
-                            line=node.lineno,
-                            column=node.col_offset,
-                            variable_name=target_str,
-                            reason=f"{concurrency_type} assigned to global/attribute {target_str}",
-                            confidence="high",
-                            code_snippet=self._get_code_snippet(node.lineno)
-                        ))
         
         # Track concurrency object creation
         if isinstance(node.value, ast.Call):
@@ -167,6 +198,22 @@ class EscapeAnalyzer(ast.NodeVisitor):
                     if isinstance(target, ast.Name):
                         var_name = target.id
                         self.concurrency_objects[var_name] = (node.lineno, node.col_offset, concurrency_type)
+            else:
+                # Check if this is a call to an imported function that has escapes
+                if self._check_function_call_escapes(node.value):
+                    for target in node.targets:
+                        if isinstance(target, ast.Name):
+                            var_name = target.id
+                            # Mark as return value of function with escapes
+                            self.escapes.append(EscapeInfo(
+                                escape_type="parameter",
+                                line=node.lineno,
+                                column=node.col_offset,
+                                variable_name=var_name,
+                                reason=f"Variable '{var_name}' assigned from function with unjoined concurrency",
+                                confidence="high",
+                                code_snippet=self._get_code_snippet(node.lineno)
+                            ))
         elif isinstance(node.value, ast.ListComp):
             # Check if list comprehension creates concurrency objects
             if isinstance(node.value.elt, ast.Call):
@@ -175,35 +222,100 @@ class EscapeAnalyzer(ast.NodeVisitor):
                     for target in node.targets:
                         if isinstance(target, ast.Name):
                             var_name = target.id
-                            # Track as a list of concurrency objects
                             self.concurrency_objects[var_name] = (node.lineno, node.col_offset, f"{concurrency_type} list")
         
-        # Check for heap allocations (lists, dicts, objects) - but reduce noise
-        # Only report if it's a complex object, not simple containers
-        if isinstance(node.value, ast.Call):
-            call_str = ast.unparse(node.value.func) if hasattr(ast, 'unparse') else str(node.value.func)
-            # Skip common types that don't usually escape in harmful ways
-            if not any(t in call_str for t in ['list', 'dict', 'set', 'tuple', 'str', 'int', 'float']):
-                # Only report heap allocation if it's not a concurrency object (already tracked)
-                if not self._is_concurrency_call(node.value):
-                    for target in node.targets:
-                        names = self._extract_names(target)
-                        for name in names:
-                            self.escapes.append(EscapeInfo(
-                                escape_type="heap",
-                                line=node.lineno,
-                                column=node.col_offset,
-                                variable_name=name,
-                                reason=f"Variable '{name}' assigned heap-allocated object",
-                                confidence="low",
-                                code_snippet=self._get_code_snippet(node.lineno)
-                            ))
+        self.generic_visit(node)
+    
+    def visit_Call(self, node: ast.Call):
+        """Detect parameter escapes and function calls."""
+        if not self.in_target_function:
+            return
+        
+        # Check for variables passed as arguments (parameter escape)
+        for arg in node.args:
+            escaped_vars = self._extract_names(arg)
+            for var in escaped_vars:
+                if var in self.local_vars or var in self.allocated_objects:
+                    self.escapes.append(EscapeInfo(
+                        escape_type="parameter",
+                        line=node.lineno,
+                        column=node.col_offset,
+                        variable_name=var,
+                        reason=f"Object '{var}' passed as parameter",
+                        confidence="high",
+                        code_snippet=self._get_code_snippet(node.lineno)
+                    ))
+        
+        # Check keyword arguments
+        for keyword in node.keywords:
+            if isinstance(keyword.value, ast.Name):
+                var = keyword.value.id
+                if var in self.local_vars or var in self.allocated_objects:
+                    self.escapes.append(EscapeInfo(
+                        escape_type="parameter",
+                        line=node.lineno,
+                        column=node.col_offset,
+                        variable_name=var,
+                        reason=f"Object '{var}' passed as keyword argument",
+                        confidence="high",
+                        code_snippet=self._get_code_snippet(node.lineno)
+                    ))
         
         self.generic_visit(node)
+    
+    def visit_Lambda(self, node: ast.Lambda):
+        """Detect closures capturing local objects."""
+        if not self.in_target_function:
+            return
+        
+        # Variables used in lambda that are defined in outer scope escape
+        used_vars = self._find_used_variables(node.body)
+        lambda_args = set(arg.arg for arg in node.args.args)
+        
+        for var in used_vars:
+            if (var in self.local_vars or var in self.allocated_objects) and var not in lambda_args:
+                self.escapes.append(EscapeInfo(
+                    escape_type="closure",
+                    line=node.lineno,
+                    column=node.col_offset,
+                    variable_name=var,
+                    reason=f"Object '{var}' captured in lambda/closure",
+                    confidence="high",
+                    code_snippet=self._get_code_snippet(node.lineno)
+                ))
+        
+        self.generic_visit(node)
+    
+    def _extract_names(self, node: ast.AST) -> List[str]:
+        """Extract variable names from an AST node."""
+        names = []
+        if isinstance(node, ast.Name):
+            names.append(node.id)
+        elif isinstance(node, (ast.Tuple, ast.List)):
+            for elt in node.elts:
+                names.extend(self._extract_names(elt))
+        elif isinstance(node, ast.Attribute):
+            names.extend(self._extract_names(node.value))
+        return names
+    
+    def _find_used_variables(self, node: ast.AST) -> set:
+        """Find all variables used in an AST subtree."""
+        used = set()
+        for child in ast.walk(node):
+            if isinstance(child, ast.Name):
+                used.add(child.id)
+        return used
+    
+    def _get_code_snippet(self, line: int) -> Optional[str]:
+        """Get code snippet for a given line."""
+        if 0 < line <= len(self.source_lines):
+            return self.source_lines[line - 1].strip()
+        return None
     
     def visit_For(self, node: ast.For):
         """Track for loops that iterate over concurrency objects."""
         if not self.in_target_function:
+            self.generic_visit(node)
             return
         
         # Check if iterating over a known concurrency object list
@@ -215,104 +327,41 @@ class EscapeAnalyzer(ast.NodeVisitor):
                 if isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Call):
                     if isinstance(stmt.value.func, ast.Attribute):
                         if stmt.value.func.attr == 'join':
-                            # Mark the iterated list as joined in all paths (it's in a for loop)
+                            # Mark the iterated list as joined in all paths
                             self.join_in_all_paths.add(iter_var)
-            
-            if iter_var in self.concurrency_objects and iter_var not in self.join_in_all_paths:
-                # Check if .start() is called in the loop
-                has_start = False
-                for stmt in node.body:
-                    if isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Call):
-                        if isinstance(stmt.value.func, ast.Attribute):
-                            if stmt.value.func.attr == 'start':
-                                has_start = True
-                                break
-                
-                # If threads are started, mark as needs checking (will be checked at end of function)
-                # We don't report immediately because join might come in a later loop
         
         self.generic_visit(node)
     
-    def visit_Call(self, node: ast.Call):
-        """Detect concurrency primitives and parameter escapes."""
-        if not self.in_target_function:
+    def visit_Expr(self, node: ast.Expr):
+        """Handle expression statements (method calls that are statements)."""
+        if not self.in_target_function or not isinstance(node.value, ast.Call):
+            self.generic_visit(node)
             return
         
-        # Check for .join() calls
-        if isinstance(node.func, ast.Attribute):
-            if node.func.attr == 'join':
-                if isinstance(node.func.value, ast.Name):
-                    var_name = node.func.value.id
+        call = node.value
+        
+        # Check for .join(), .close(), .shutdown() calls
+        if isinstance(call.func, ast.Attribute):
+            attr = call.func.attr
+            
+            if attr == 'join':
+                if isinstance(call.func.value, ast.Name):
+                    var_name = call.func.value.id
                     self.join_in_all_paths.add(var_name)
             
-            # Check for .close() or .shutdown() on pools/executors
-            elif node.func.attr in ['close', 'shutdown', 'terminate']:
-                if isinstance(node.func.value, ast.Name):
-                    var_name = node.func.value.id
+            elif attr in ['close', 'shutdown', 'terminate']:
+                if isinstance(call.func.value, ast.Name):
+                    var_name = call.func.value.id
                     self.join_in_all_paths.add(var_name)
-            
-            # Check for Pool methods without proper cleanup
-            elif node.func.attr in ['apply_async', 'map_async', 'starmap_async']:
-                if isinstance(node.func.value, ast.Name):
-                    pool_var = node.func.value.id
-                    if pool_var in self.concurrency_objects and pool_var not in self.join_in_all_paths:
-                        self.escapes.append(EscapeInfo(
-                            escape_type="concurrency",
-                            line=node.lineno,
-                            column=node.col_offset,
-                            variable_name=pool_var,
-                            reason=f"Pool async method called without shutdown() in all paths",
-                            confidence="medium",
-                            code_snippet=self._get_code_snippet(node.lineno)
-                        ))
-        
-        # Check for variables passed as arguments (parameter escape) - reduce noise
-        # Only report for concurrency objects that are not being joined
-        for arg in node.args:
-            escaped_vars = self._extract_names(arg)
-            for var in escaped_vars:
-                if var in self.concurrency_objects and var not in self.join_in_all_paths:
-                    # Don't report if this is passing to a cleanup function
-                    func_name = ast.unparse(node.func) if hasattr(ast, 'unparse') else ''
-                    if not any(cleanup in func_name for cleanup in ['join', 'wait', 'close', 'shutdown']):
-                        self.escapes.append(EscapeInfo(
-                            escape_type="parameter",
-                            line=node.lineno,
-                            column=node.col_offset,
-                            variable_name=var,
-                            reason=f"Concurrency object '{var}' passed without documented join",
-                            confidence="medium",
-                            code_snippet=self._get_code_snippet(node.lineno)
-                        ))
-        
-        self.generic_visit(node)
-    
-    def visit_Lambda(self, node: ast.Lambda):
-        """Detect closures."""
-        if not self.in_target_function:
-            return
-        
-        # Variables used in lambda that are defined in outer scope escape
-        used_vars = self._find_used_variables(node.body)
-        lambda_args = set(arg.arg for arg in node.args.args)
-        
-        for var in used_vars:
-            if var in self.local_vars and var not in lambda_args:
-                self.escapes.append(EscapeInfo(
-                    escape_type="closure",
-                    line=node.lineno,
-                    column=node.col_offset,
-                    variable_name=var,
-                    reason=f"Variable '{var}' captured in lambda/closure",
-                    confidence="high",
-                    code_snippet=self._get_code_snippet(node.lineno)
-                ))
         
         self.generic_visit(node)
     
     def _is_concurrency_call(self, node: ast.Call) -> Optional[str]:
         """Check if a Call node creates a concurrency object. Returns the type if so."""
-        call_str = ast.unparse(node.func) if hasattr(ast, 'unparse') else str(node.func)
+        try:
+            call_str = ast.unparse(node.func) if hasattr(ast, 'unparse') else str(node.func)
+        except:
+            return None
         
         concurrency_patterns = {
             'Thread': 'Thread',
@@ -335,19 +384,105 @@ class EscapeAnalyzer(ast.NodeVisitor):
         
         return None
     
+    def _scan_imports(self):
+        """Scan the source code for import statements."""
+        try:
+            tree = ast.parse(self.source_code)
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Import):
+                    for alias in node.names:
+                        name = alias.asname if alias.asname else alias.name
+                        self.imports[name] = alias.name
+                elif isinstance(node, ast.ImportFrom):
+                    module = node.module or ""
+                    for alias in node.names:
+                        name = alias.asname if alias.asname else alias.name
+                        self.import_froms[name] = (module, alias.name)
+        except:
+            pass
+    
+    def _resolve_imported_function(self, func_ref: str) -> Optional[str]:
+        """Try to resolve an imported function to its source file."""
+        # Check if it's a module.function reference
+        if '.' in func_ref:
+            module_alias, func_name = func_ref.split('.', 1)
+            if module_alias in self.imports:
+                module_path = self.imports[module_alias]
+                return self._find_imported_module(module_path, func_name)
+        return None
+    
+    def _find_imported_module(self, module_name: str, func_name: str, call_node: Optional[ast.Call] = None) -> Optional[str]:
+        """Try to find and analyze an imported module.
+        
+        Args:
+            module_name: Name of the module to import
+            func_name: Function to analyze
+            call_node: Optional AST node of the call to check for daemon parameter
+        """
+        if not self.source_file:
+            return None
+        
+        source_dir = Path(self.source_file).parent
+        
+        # Try different module path variants
+        possible_paths = [
+            source_dir / f"{module_name}.py",
+            source_dir / module_name / "__init__.py",
+            Path(module_name.replace('.', '/') + '.py'),
+        ]
+        
+        for path in possible_paths:
+            try:
+                if path.exists():
+                    with open(path, 'r') as f:
+                        imported_code = f.read()
+                    
+                    # Analyze the imported function
+                    temp_analyzer = ObjectEscapeAnalyzer(imported_code, func_name, str(path))
+                    temp_analyzer.visit(ast.parse(imported_code))
+                    
+                    # Check if daemon=True was passed - if so, the escape is acceptable
+                    if call_node:
+                        for keyword in call_node.keywords:
+                            if keyword.arg == 'daemon':
+                                # Check if value is True
+                                if isinstance(keyword.value, ast.Constant) and keyword.value.value is True:
+                                    return None  # Daemon thread is safe, no escape
+                                elif isinstance(keyword.value, ast.NameConstant) and keyword.value.value is True:
+                                    return None  # Daemon thread is safe, no escape
+                    
+                    # If the imported function has escapes, mark our call as problematic
+                    if temp_analyzer.escapes:
+                        return f"{path}:{func_name}"
+            except:
+                continue
+        
+        return None
+    
+    def _check_function_call_escapes(self, node: ast.Call) -> bool:
+        """Check if a function call might have escapes in its implementation."""
+        if isinstance(node.func, ast.Attribute):
+            # Handle attribute calls like h.spawn_worker()
+            if isinstance(node.func.value, ast.Name):
+                module_alias = node.func.value.id
+                func_name = node.func.attr
+                
+                # Check if this is an imported module
+                if module_alias in self.imports:
+                    module_path = self.imports[module_alias]
+                    # Pass the call node so we can check for daemon parameter
+                    result = self._find_imported_module(module_path, func_name, node)
+                    return result is not None
+        
+        return False
+    
     def _check_unjoined_concurrency(self):
         """Check for concurrency objects that were created but not joined in ALL code paths."""
         for var_name, (line, col, obj_type) in self.concurrency_objects.items():
-            # Only report if join was NOT called in all paths
+            # Only report if join was NOT called in all paths and variable wasn't reassigned
             if var_name not in self.join_in_all_paths and var_name not in self.reassigned_vars:
-                # High confidence if join is in some paths (incomplete cleanup)
-                # Medium confidence if join is not tracked (may be cleaned up elsewhere)
-                if var_name in self.join_in_some_paths:
-                    confidence = "high"
-                    reason = f"{obj_type} '{var_name}' not joined in all code paths"
-                else:
-                    confidence = "high"
-                    reason = f"{obj_type} '{var_name}' created but not visibly joined/closed"
+                confidence = "high"
+                reason = f"{obj_type} '{var_name}' created but not properly joined/closed"
                 
                 self.escapes.append(EscapeInfo(
                     escape_type="concurrency",
@@ -358,36 +493,10 @@ class EscapeAnalyzer(ast.NodeVisitor):
                     confidence=confidence,
                     code_snippet=self._get_code_snippet(line)
                 ))
-    
-    def _extract_names(self, node: ast.AST) -> List[str]:
-        """Extract variable names from an AST node."""
-        names = []
-        if isinstance(node, ast.Name):
-            names.append(node.id)
-        elif isinstance(node, ast.Tuple) or isinstance(node, ast.List):
-            for elt in node.elts:
-                names.extend(self._extract_names(elt))
-        elif isinstance(node, ast.Attribute):
-            names.extend(self._extract_names(node.value))
-        return names
-    
-    def _find_used_variables(self, node: ast.AST) -> set:
-        """Find all variables used in an AST subtree."""
-        used = set()
-        for child in ast.walk(node):
-            if isinstance(child, ast.Name):
-                used.add(child.id)
-        return used
-    
-    def _get_code_snippet(self, line: int) -> Optional[str]:
-        """Get code snippet for a given line."""
-        if 0 < line <= len(self.source_lines):
-            return self.source_lines[line - 1].strip()
-        return None
 
 
 def analyze_file(file_path: str, function_name: str) -> Dict[str, Any]:
-    """Analyze a Python file for escape patterns in a specific function."""
+    """Analyze a Python file for object escape patterns in a specific function."""
     try:
         with open(file_path, 'r') as f:
             source_code = f.read()
@@ -406,7 +515,7 @@ def analyze_file(file_path: str, function_name: str) -> Dict[str, Any]:
         return {"escapes": [], "success": False, "error": f"Parse error: {type(e).__name__}: {str(e)}"}
     
     try:
-        analyzer = EscapeAnalyzer(source_code, function_name)
+        analyzer = ObjectEscapeAnalyzer(source_code, function_name, file_path)
         analyzer.visit(tree)
         return {
             "target_function": function_name,
@@ -426,7 +535,7 @@ def main():
         print(json.dumps({
             "escapes": [],
             "success": False,
-            "error": "Usage: static_analyzer.py <file_path> <function_name> (got {} args)".format(len(sys.argv) - 1)
+            "error": "Usage: static_analyzer.py <file_path> <function_name>"
         }))
         sys.exit(1)
     
@@ -442,17 +551,18 @@ def main():
                 "error": f"File not found: {file_path}"
             }))
             sys.exit(1)
+        
+        result = analyze_file(file_path, function_name)
+        print(json.dumps(result))
+        
     except Exception as e:
         print(json.dumps({
             "escapes": [],
             "success": False,
-            "error": f"Cannot access file: {str(e)}"
+            "error": f"Error: {type(e).__name__}: {str(e)}"
         }))
         sys.exit(1)
-    
-    result = analyze_file(file_path, function_name)
-    print(json.dumps(result, indent=2))
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()

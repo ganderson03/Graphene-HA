@@ -1,34 +1,26 @@
 # Node.js Bridge
 
-This bridge connects the Rust orchestrator to Node.js/JavaScript code for escape analysis.
+Bridge for Node.js object/data escape analysis.
 
 ## Files
 
-- **analyzer_bridge.js** - Dynamic analyzer that executes JavaScript functions and detects escaping async resources
-- **static_analyzer.js** - Static analyzer that detects timer leaks and async patterns
-- **package.json** - Node.js package configuration
+- analyzer_bridge.js
+- static_analyzer.js
+- package.json
 
-## Dynamic Analysis
+## Capabilities
 
-The dynamic analyzer uses Node.js `async_hooks` to:
-- Track async resources created during function execution
-- Detect timers, promises, and other async operations that escape
-- Measure execution times and detect crashes
+- Dynamic execution with async_hooks-backed runtime observations
+- Static source analysis for retention and escape patterns
 
-### Usage
+## Example (dynamic bridge request)
+
 ```bash
-echo '{"session_id":"test","target":"module:function","inputs":["data"],"repeat":1,"timeout_seconds":5.0,"options":{}}' | node analyzer_bridge.js
+echo '{"session_id":"s1","target":"tests/nodejs/cases/case_001_cache_profile.js:case001CacheProfile","inputs":["sample"],"repeat":1,"timeout_seconds":5.0,"options":{}}' | node analyzer_bridge.js
 ```
 
-## Static Analysis
+## Static analyzer usage
 
-The static analyzer performs text-based pattern matching to:
-- Detect `setTimeout` without `clearTimeout`
-- Detect `setInterval` without `clearInterval`
-- Identify `process.nextTick` and `setImmediate` patterns
-- Track timer handles
-
-### Usage
 ```bash
 node static_analyzer.js <source_file> <function_name>
 ```
@@ -36,4 +28,3 @@ node static_analyzer.js <source_file> <function_name>
 ## Dependencies
 
 - Node.js 14+
-- No external dependencies (uses built-in modules)

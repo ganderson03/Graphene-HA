@@ -2,7 +2,7 @@ use anyhow::{Result, Context};
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
 use crate::analyzer::AnalyzerRegistry;
-use crate::protocol::{AnalyzeRequest, AnalyzeResponse, AnalysisMode, ExecutionSummary};
+use crate::protocol::{AnalyzeRequest, AnalyzeResponse, AnalysisMode, ExecutionSummary, ExecutionResult};
 use crate::report::ReportGenerator;
 use crate::static_analyzer::StaticAnalyzerFactory;
 use std::collections::{HashMap, HashSet};
@@ -22,20 +22,21 @@ pub async fn analyze_target(
 ) -> Result<()> {
     init_logging(verbose);
 
-    info!("Initializing analyzers...");
+    info!("Initializing object escape analysis...");
     info!("Analysis mode: {:?}", analysis_mode);
+    run_startup_runtime_self_check(target, language.as_deref(), analysis_mode).await?;
     
     let mut response: Option<AnalyzeResponse> = None;
     
     // Static analysis
     if analysis_mode == AnalysisMode::Static || analysis_mode == AnalysisMode::Both {
-        info!("Running static escape analysis...");
+        info!("Running static object escape analysis...");
         response = Some(run_static_analysis(target, language.as_deref(), analysis_mode).await?);
     }
     
-    // Dynamic analysis
+    // Dynamic analysis - enhanced for object escape verification
     if analysis_mode == AnalysisMode::Dynamic || analysis_mode == AnalysisMode::Both {
-        info!("Running dynamic escape analysis...");
+        info!("Running dynamic object escape verification...");
         let dynamic_response = run_dynamic_analysis(
             target,
             inputs,
@@ -46,7 +47,7 @@ pub async fn analyze_target(
         ).await?;
         
         if let Some(ref mut resp) = response {
-            // Merge static results with dynamic results
+            // Merge static results with dynamic verification
             resp.results = dynamic_response.results;
             resp.vulnerabilities.extend(dynamic_response.vulnerabilities);
             resp.summary = dynamic_response.summary;
@@ -64,6 +65,47 @@ pub async fn analyze_target(
 
     // Print summary
     print_summary(&response);
+
+    Ok(())
+}
+
+async fn run_startup_runtime_self_check(
+    target: &str,
+    language: Option<&str>,
+    analysis_mode: AnalysisMode,
+) -> Result<()> {
+    let registry = AnalyzerRegistry::initialize_all().await?;
+    let init_failures = registry.initialization_failures();
+
+    if init_failures.is_empty() {
+        info!("Startup runtime self-check passed: all analyzers initialized.");
+        return Ok(());
+    }
+
+    eprintln!("\n⚠ Runtime self-check: unavailable analyzers detected before analysis:");
+    for failure in init_failures {
+        eprintln!("  - {}: {}", failure.language, failure.reason);
+    }
+    eprintln!("  Tip: run `graphene-ha list --detailed` for analyzer diagnostics.\n");
+
+    if analysis_mode == AnalysisMode::Dynamic || analysis_mode == AnalysisMode::Both {
+        let normalized_language = language.map(normalize_language_filter);
+        let selected_language = normalized_language.as_deref();
+
+        if registry.find_analyzer(target, selected_language).is_none() {
+            if let Some(lang) = selected_language {
+                anyhow::bail!(
+                    "Runtime self-check failed before analysis: '{}' analyzer is unavailable. Install missing runtime/toolchain and retry.",
+                    lang
+                );
+            }
+
+            anyhow::bail!(
+                "Runtime self-check failed before analysis: no analyzer can handle target '{}'. Install required runtime/toolchain and retry.",
+                target
+            );
+        }
+    }
 
     Ok(())
 }
@@ -281,6 +323,7 @@ pub async fn list_analyzers(detailed: bool) -> Result<()> {
 
     let registry = AnalyzerRegistry::initialize_all().await?;
     let analyzers = registry.list_analyzers();
+    let init_failures = registry.initialization_failures();
 
     println!("\n╔════════════════════════════════════════════╗");
     println!("║       Available Escape Analyzers          ║");
@@ -304,6 +347,18 @@ pub async fn list_analyzers(detailed: bool) -> Result<()> {
             Err(e) => {
                 error!("Failed to get info for analyzer: {}", e);
             }
+        }
+    }
+
+    if !init_failures.is_empty() {
+        println!("⚠ Skipped analyzers during initialization: {}", init_failures.len());
+        if detailed {
+            for failure in init_failures {
+                println!("   - {}: {}", failure.language, failure.reason);
+            }
+            println!();
+        } else {
+            println!("   Re-run with --detailed to show initialization failure reasons.\n");
         }
     }
 
@@ -418,9 +473,6 @@ fn print_summary(response: &AnalyzeResponse) {
         let summary = &static_result.summary;
         println!("\nEscape Summary:");
         println!("  Total Escapes: {}", summary.total_escapes);
-        if summary.concurrency_escapes > 0 {
-            println!("  🚨 Concurrency Escapes: {}", summary.concurrency_escapes);
-        }
         if summary.return_escapes > 0 {
             println!("  ↩  Return Escapes: {}", summary.return_escapes);
         }
@@ -470,9 +522,160 @@ fn print_summary(response: &AnalyzeResponse) {
         } else {
             println!("\n✅ No runtime vulnerabilities detected");
         }
+
+        print_error_diagnostics(&response.results);
     }
     
     println!();
+}
+
+fn print_error_diagnostics(results: &[ExecutionResult]) {
+    let error_results: Vec<&ExecutionResult> = results
+        .iter()
+        .filter(|r| r.crashed || !r.error.trim().is_empty())
+        .collect();
+
+    if error_results.is_empty() {
+        println!("\n✅ No execution errors were reported.");
+        return;
+    }
+
+    let mut counts: HashMap<&'static str, usize> = HashMap::new();
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut samples: Vec<String> = Vec::new();
+
+    for result in error_results {
+        let diagnosis = diagnose_runtime_error(result);
+        *counts.entry(diagnosis.category).or_insert(0) += 1;
+
+        let sample_key = format!("{}:{}", diagnosis.category, diagnosis.message);
+        if seen.insert(sample_key) && samples.len() < 3 {
+            samples.push(format!(
+                "{} for input '{}': {} | Hint: {}",
+                diagnosis.category,
+                truncate_for_console(&result.input_data, 30),
+                diagnosis.message,
+                diagnosis.hint
+            ));
+        }
+    }
+
+    let mut category_rows: Vec<(&str, usize)> = counts.into_iter().collect();
+    category_rows.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(b.0)));
+
+    println!("\nError Diagnostics:");
+    for (category, count) in category_rows {
+        println!("  • {}: {}", category, count);
+    }
+
+    if !samples.is_empty() {
+        println!("\nRepresentative Errors:");
+        for sample in samples {
+            println!("  - {}", sample);
+        }
+    }
+}
+
+fn diagnose_runtime_error(result: &ExecutionResult) -> RuntimeDiagnosis {
+    let raw = if result.error.trim().is_empty() {
+        if result.crashed {
+            "Execution failed without an error message"
+        } else {
+            ""
+        }
+    } else {
+        result.error.trim()
+    };
+
+    let lower = raw.to_lowercase();
+
+    let (category, hint) = if lower.contains("timeout") || lower.contains("timed out") || lower.contains("exceeded") {
+        (
+            "Timeout",
+            "Inspect blocking operations and missing joins/awaits before increasing timeout.",
+        )
+    } else if lower.contains("target resolution")
+        || lower.contains("not found")
+        || lower.contains("failed to load")
+        || lower.contains("invalid target")
+        || lower.contains("nosuchmethod")
+        || lower.contains("module not found")
+    {
+        (
+            "Target Resolution",
+            "Verify the target signature/path and language selection.",
+        )
+    } else if lower.contains("protocol/input")
+        || lower.contains("json")
+        || lower.contains("parse")
+        || lower.contains("stdin")
+        || lower.contains("protocol")
+    {
+        (
+            "Protocol/Input",
+            "Validate bridge JSON format and ensure no protocol fields changed.",
+        )
+    } else if lower.contains("environment")
+        || lower.contains("permission denied")
+        || lower.contains("not available")
+        || lower.contains("not found in path")
+        || lower.contains("command not found")
+        || lower.contains("missing tools")
+    {
+        (
+            "Environment",
+            "Check toolchain/runtime availability and PATH configuration.",
+        )
+    } else if lower.contains("runtime crash")
+        || result.crashed
+        || lower.contains("panic")
+        || lower.contains("exception")
+        || lower.contains("traceback")
+        || lower.contains("segmentation")
+    {
+        (
+            "Runtime Crash",
+            "Re-run with --verbose and inspect stack traces from the target function.",
+        )
+    } else {
+        (
+            "Unknown",
+            "Re-run with --verbose and inspect bridge stderr for additional diagnostics.",
+        )
+    };
+
+    RuntimeDiagnosis {
+        category,
+        message: first_nonempty_line(raw),
+        hint,
+    }
+}
+
+fn first_nonempty_line(message: &str) -> String {
+    message
+        .lines()
+        .find(|line| !line.trim().is_empty())
+        .unwrap_or("")
+        .trim()
+        .to_string()
+}
+
+fn truncate_for_console(value: &str, max_chars: usize) -> String {
+    let normalized = value.replace('\n', " ").replace('\r', " ").trim().to_string();
+    if normalized.chars().count() <= max_chars {
+        return normalized;
+    }
+
+    let keep = max_chars.saturating_sub(3);
+    let mut out = normalized.chars().take(keep).collect::<String>();
+    out.push_str("...");
+    out
+}
+
+struct RuntimeDiagnosis {
+    category: &'static str,
+    message: String,
+    hint: &'static str,
 }
 
 fn init_logging(verbose: bool) {
@@ -640,7 +843,10 @@ fn discover_python_targets(test_dir: &Path) -> Result<Vec<String>> {
         let content = fs::read_to_string(&file)
             .with_context(|| format!("Failed to read file: {}", file.display()))?;
         for func in extract_python_functions(&content) {
-            targets.push(format!("{}:{}", to_relative_path(&file), func));
+            let target = format!("{}:{}", to_relative_path(&file), func);
+            if !is_thread_escape_test_target(&target) {
+                targets.push(target);
+            }
         }
     }
 
@@ -688,7 +894,10 @@ fn discover_nodejs_targets(test_dir: &Path) -> Result<Vec<String>> {
             .with_context(|| format!("Failed to read file: {}", file.display()))?;
         let exports = extract_nodejs_exports(&content);
         for export in exports {
-            targets.push(format!("{}:{}", to_relative_path(&file), export));
+            let target = format!("{}:{}", to_relative_path(&file), export);
+            if !is_thread_escape_test_target(&target) {
+                targets.push(target);
+            }
         }
     }
 
@@ -705,7 +914,7 @@ fn extract_nodejs_exports(content: &str) -> Vec<String> {
             continue;
         }
 
-        if trimmed.starts_with("module.exports") && trimmed.contains('{') {
+        if (trimmed.starts_with("module.exports =") || trimmed.starts_with("module.exports=")) && trimmed.contains('{') {
             in_block = true;
         }
 
@@ -770,7 +979,10 @@ fn discover_java_targets(test_dir: &Path) -> Result<Vec<String>> {
             .with_context(|| format!("Failed to read file: {}", file.display()))?;
         if let Some((class_name, methods)) = extract_java_class_and_methods(&content) {
             for method in methods {
-                targets.push(format!("{}:{}:{}", to_relative_path(&jar_path), class_name, method));
+                let target = format!("{}:{}:{}", to_relative_path(&jar_path), class_name, method);
+                if !is_thread_escape_test_target(&target) {
+                    targets.push(target);
+                }
             }
         }
     }
@@ -874,7 +1086,10 @@ fn discover_rust_targets(test_dir: &Path) -> Result<Vec<String>> {
         let content = fs::read_to_string(&file)
             .with_context(|| format!("Failed to read file: {}", file.display()))?;
         for func in extract_rust_functions(&content) {
-            targets.push(format!("{}::{}::{}", crate_name, module, func));
+            let target = format!("{}::{}::{}", crate_name, module, func);
+            if !is_thread_escape_test_target(&target) {
+                targets.push(target);
+            }
         }
     }
 
@@ -937,7 +1152,10 @@ fn discover_go_targets(test_dir: &Path) -> Result<Vec<String>> {
         let content = fs::read_to_string(&file)
             .with_context(|| format!("Failed to read file: {}", file.display()))?;
         for func in extract_go_functions(&content) {
-            targets.push(format!("{}:{}", to_relative_path(&file), func));
+            let target = format!("{}:{}", to_relative_path(&file), func);
+            if !is_thread_escape_test_target(&target) {
+                targets.push(target);
+            }
         }
     }
 
@@ -967,6 +1185,20 @@ fn extract_go_functions(content: &str) -> Vec<String> {
     }
 
     functions
+}
+
+fn is_thread_escape_test_target(target: &str) -> bool {
+    let lower = target.to_ascii_lowercase();
+    let patterns = [
+        "thread",
+        "goroutine",
+        "workerthread",
+        "worker_thread",
+        "threadpool",
+        "executor",
+    ];
+
+    patterns.iter().any(|pattern| lower.contains(pattern))
 }
 
 fn is_valid_identifier(name: &str) -> bool {

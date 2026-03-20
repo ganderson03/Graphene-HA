@@ -1,38 +1,20 @@
 # Python Bridge
 
-This bridge connects the Rust orchestrator to Python code for escape analysis.
+Bridge for Python object/data escape analysis.
 
 ## Files
 
-- **analyzer_bridge.py** - Dynamic analyzer that executes Python functions and detects escaping threads/processes
-- **static_analyzer.py** - Static AST-based analyzer that detects potential escapes without execution
+- analyzer_bridge.py
+- static_analyzer.py
 
-## Dynamic Analysis
+## What it does
 
-The dynamic analyzer uses the `test_harness.py` and `vulnerability_detector.py` from the `graphene_ha` package to:
-- Execute Python functions in isolation
-- Track threads, processes, and async tasks created during execution
-- Detect which concurrency objects escape (are not joined/closed)
+- Parses requests from orchestrator
+- Runs target functions when required
+- Produces protocol-shaped escape findings
 
-### Usage
+## Example
+
 ```bash
-echo '{"session_id":"test","target":"module:function","inputs":["data"],"repeat":1,"timeout_seconds":5.0,"options":{}}' | python3 analyzer_bridge.py
+echo '{"session_id":"s1","target":"tests/python/cases/case_001_cache_profile.py:case_001_cache_profile","inputs":["sample"],"repeat":1,"timeout_seconds":5.0,"options":{}}' | python analyzer_bridge.py
 ```
-
-## Static Analysis
-
-The static analyzer uses Python's AST module to:
-- Parse Python source code
-- Identify thread/process/pool creation
-- Track `.join()` and `.close()` calls
-- Report concurrency objects that may leak
-
-### Usage
-```bash
-python3 static_analyzer.py <source_file> <function_name>
-```
-
-## Dependencies
-
-- Python 3.7+
-- No external dependencies (uses standard library)
