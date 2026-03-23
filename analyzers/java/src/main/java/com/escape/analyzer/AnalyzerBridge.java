@@ -306,32 +306,52 @@ public class AnalyzerBridge {
     }
 
     private static LoadedTarget loadTargetMethod(String target) throws Exception {
-        // Parse target: ClassName:methodName or file.jar:ClassName:methodName
-        String[] parts = target.split(":");
-        if (parts.length < 2) {
+        // Parse target from right to left so Windows paths/classpaths remain intact.
+        int lastColon = target.lastIndexOf(':');
+        if (lastColon <= 0 || lastColon == target.length() - 1) {
             throw new IllegalArgumentException("Target must be ClassName:methodName or jar:ClassName:methodName");
         }
 
-        String className, methodName;
+        int secondLastColon = target.lastIndexOf(':', lastColon - 1);
+
+        String className;
+        String methodName = target.substring(lastColon + 1).trim();
         Method method;
         String sourceFile = null;
-        if (parts.length == 3) {
-            // Load from JAR
-            String jarPath = parts[0];
-            className = parts[1];
-            methodName = parts[2];
-            URL jarUrl = new File(jarPath).toURI().toURL();
+
+        if (secondLastColon > 0) {
+            // Load from classpath (jar and/or classes directory)
+            String classPathSpec = target.substring(0, secondLastColon).trim();
+            className = target.substring(secondLastColon + 1, lastColon).trim();
+            if (classPathSpec.isEmpty() || className.isEmpty() || methodName.isEmpty()) {
+                throw new IllegalArgumentException("Invalid target format: " + target);
+            }
+
+            String[] entries = classPathSpec.split(Pattern.quote(File.pathSeparator));
+            List<URL> urls = new ArrayList<>();
+            for (String entry : entries) {
+                String trimmed = entry.trim();
+                if (!trimmed.isEmpty()) {
+                    urls.add(new File(trimmed).toURI().toURL());
+                }
+            }
+            if (urls.isEmpty()) {
+                throw new IllegalArgumentException("No classpath entries in target: " + target);
+            }
+
             // Note: URLClassLoader is intentionally not closed here because the loaded
             // class and method must remain accessible after this method returns.
             // The classloader will be garbage collected when no longer referenced.
             @SuppressWarnings("resource")
-            URLClassLoader classLoader = new URLClassLoader(new URL[]{jarUrl});
+            URLClassLoader classLoader = new URLClassLoader(urls.toArray(new URL[0]));
             Class<?> clazz = classLoader.loadClass(className);
             method = findMethodByName(clazz, methodName);
             sourceFile = resolveSourceFile(className);
         } else {
-            className = parts[0];
-            methodName = parts[1];
+            className = target.substring(0, lastColon).trim();
+            if (className.isEmpty() || methodName.isEmpty()) {
+                throw new IllegalArgumentException("Invalid target format: " + target);
+            }
             Class<?> clazz = Class.forName(className);
             method = findMethodByName(clazz, methodName);
             sourceFile = resolveSourceFile(className);

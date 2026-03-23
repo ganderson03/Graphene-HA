@@ -5,21 +5,33 @@ use crate::protocol::AnalyzerInfo;
 
 pub async fn create() -> Result<BridgeAnalyzer> {
     let java_path = find_java().await?;
-    let bridge_jar = crate::analyzer::workspace_root()?
-        .join("analyzers/java/target/escape-analyzer.jar")
+    let workspace = crate::analyzer::workspace_root()?;
+    let classes_dir = workspace
+        .join("analyzers/java/target/classes")
         .to_string_lossy()
         .to_string();
+    let gson_jar = workspace
+        .join("analyzers/java/target/gson-2.10.1.jar")
+        .to_string_lossy()
+        .to_string();
+    let classpath_separator = if cfg!(windows) { ";" } else { ":" };
+    let bridge_classpath = format!("{}{}{}", classes_dir, classpath_separator, gson_jar);
 
     Ok(BridgeAnalyzer::new(
         "java",
-        vec![java_path.clone(), "-jar".into(), bridge_jar],
+        vec![
+            java_path.clone(),
+            "-cp".into(),
+            bridge_classpath,
+            "com.escape.analyzer.AnalyzerBridge".into(),
+        ],
         Some(vec![java_path.clone(), "-version".into()]),
         AnalyzerInfo {
             name: "Java Escape Analyzer".into(),
             language: "java".into(),
             version: "1.0.0".into(),
             supported_features: crate::analyzer::standardized_object_escape_capabilities(),
-            executable_path: java_path,
+            executable_path: format!("{} (cp classes)", java_path),
         },
         |target| target.ends_with(".java") || target.contains(".jar:"),
     ))

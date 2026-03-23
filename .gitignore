@@ -84,6 +84,8 @@ dmypy.json
 
 # Logs
 logs/
+/logs_competitors*/
+/logs_comparison*/
 *.log
 
 # Dashboard rendering artifacts
@@ -96,6 +98,11 @@ logs/
 /performance_*.gif
 /performance_*.mp4
 /performance_*.webm
+
+# Benchmark and data-collection output folders
+/artifacts/
+/comparison_dashboard*/
+/scripts/tmp/
 
 # Environment
 .env

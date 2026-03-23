@@ -4,7 +4,7 @@
 
 - cases/
 
-This directory contains 100 annotated modules (`case_001_cache_profile.py` ... `case_100__ledger.py`).
+This directory contains 200+ annotated modules (`case_001_cache_profile.py` ... `case_200_closure_no_escape_10.py`).
 Each module exports one function named after the file, for example `case_001_cache_profile`.
 
 Annotations used inside each case:

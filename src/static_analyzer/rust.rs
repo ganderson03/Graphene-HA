@@ -65,6 +65,17 @@ impl StaticEscapeAnalyzer for RustStaticAnalyzer {
 }
 
 fn parse_target_function(target: &str) -> Option<String> {
+    // Run-all Rust targets often use crate/module/function notation.
+    if target.contains("::") {
+        let parts: Vec<&str> = target.split("::").collect();
+        if let Some(last) = parts.last() {
+            let fn_part = last.trim();
+            if !fn_part.is_empty() {
+                return Some(fn_part.to_string());
+            }
+        }
+    }
+
     let parts: Vec<&str> = target.split(':').collect();
     if parts.len() == 2 {
         let fn_part = parts[1].trim();
@@ -138,6 +149,10 @@ fn analyze_function(
             }
 
             if let Some(escape) = detect_heap_escape(line, source_file, i + 1, function_name) {
+                escapes.push(escape);
+            }
+
+            if let Some(escape) = detect_retained_global_escape(line, source_file, i + 1, function_name) {
                 escapes.push(escape);
             }
 
@@ -321,6 +336,45 @@ fn detect_heap_escape(
         confidence: ConfidenceLevel::Medium,
         data_flow: vec![],
     })
+}
+
+fn detect_retained_global_escape(
+    line: &str,
+    source_file: &str,
+    line_number: usize,
+    function_name: &str,
+) -> Option<StaticEscape> {
+    if !line.contains("RETAINED_") || !line.contains(".push(") {
+        return None;
+    }
+
+    let variable_name = extract_push_argument(line).unwrap_or_else(|| "<unknown>".to_string());
+    let column = line.find("RETAINED_").unwrap_or(0);
+
+    Some(StaticEscape {
+        escape_type: EscapeType::GlobalEscape,
+        location: SourceLocation {
+            file: source_file.to_string(),
+            line: line_number,
+            column,
+            function: function_name.to_string(),
+            code_snippet: Some(line.trim().to_string()),
+        },
+        variable_name: variable_name.clone(),
+        reason: format!(
+            "Value '{}' is persisted into retained global state",
+            variable_name
+        ),
+        confidence: ConfidenceLevel::High,
+        data_flow: vec![],
+    })
+}
+
+fn extract_push_argument(line: &str) -> Option<String> {
+    let push_idx = line.find(".push(")? + 6;
+    let rest = &line[push_idx..];
+    let end_idx = rest.find(')')?;
+    sanitize_ident(rest[..end_idx].trim())
 }
 
 fn detect_concurrency(

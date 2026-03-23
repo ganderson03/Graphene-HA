@@ -4,7 +4,7 @@
 
 - cases/
 
-Contains 100 annotated modules (`case_001_cache_profile.js` ... `case_100__ledger.js`).
+Contains 200+ annotated modules (`case_001_cache_profile.js` ... `case_200_closure_no_escape_10.js`).
 Each module exports one function, for example `case001CacheProfile`.
 
 ## Example target

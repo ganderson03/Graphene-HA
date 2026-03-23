@@ -4,7 +4,7 @@
 
 - cases/
 
-Contains 100 case files (`case_001_cache_profile.rs` ... `case_100__ledger.rs`) exported by lib.rs.
+Contains 200 case files (`case_001_cache_profile.rs` ... `case_200_closure_no_escape_10.rs`) exported by lib.rs.
 
 ## Build check
 

@@ -115,6 +115,10 @@ class PerformanceAnalyzer:
 
     def _resolve_source_from_target(self, language: str, target: str) -> Optional[Path]:
         """Resolve analyzed target string to an expected-label source file, if available."""
+        # Comparison dashboards may prefix language names (e.g., graphene__python).
+        if "__" in language:
+            language = language.rsplit("__", 1)[-1]
+
         if not target or target == "Unknown":
             return None
 
@@ -122,7 +126,29 @@ class PerformanceAnalyzer:
         parts = target.split(":")
         first_part = parts[0].strip()
 
-        if language in {"python", "javascript", "go", "rust"}:
+        if language == "rust":
+            if first_part:
+                candidate = (self.repo_root / first_part).resolve()
+                if candidate.exists():
+                    return candidate
+
+            # Graphene Rust targets are typically crate::module::function.
+            # Resolve module names back to benchmark case files.
+            if "::" in target:
+                rust_parts = [part.strip() for part in target.split("::") if part.strip()]
+                if len(rust_parts) >= 3:
+                    module = rust_parts[-2]
+                    rust_candidates = [
+                        self.repo_root / "tests" / "rust" / "cases" / f"{module}.rs",
+                        self.repo_root / "tests" / "rust" / f"{module}.rs",
+                    ]
+                    for rust_candidate in rust_candidates:
+                        resolved = rust_candidate.resolve()
+                        if resolved.exists():
+                            return resolved
+            return None
+
+        if language in {"python", "javascript", "go"}:
             if not first_part:
                 return None
             candidate = (self.repo_root / first_part).resolve()
@@ -134,6 +160,15 @@ class PerformanceAnalyzer:
                 candidate = (self.repo_root / first_part).resolve()
                 return candidate if candidate.exists() else None
 
+            # Classpath-style targets may include multiple entries before class name,
+            # e.g. tests/java/target/app.jar;tests/java/target/classes:pkg.Class:execute
+            if len(parts) >= 3:
+                class_name = parts[-2].strip()
+                if class_name:
+                    java_rel = Path("tests/java/src/main/java") / Path(class_name.replace(".", "/")).with_suffix(".java")
+                    candidate = (self.repo_root / java_rel).resolve()
+                    return candidate if candidate.exists() else None
+
             if first_part.endswith(".jar") and len(parts) >= 2:
                 class_name = parts[1].strip()
                 if not class_name:
@@ -143,6 +178,44 @@ class PerformanceAnalyzer:
                 return candidate if candidate.exists() else None
 
         return None
+
+    def _display_language_name(self, language: str) -> str:
+        """Convert internal language keys to concise graph-friendly labels."""
+        raw = language
+        if "__" in language:
+            parts = language.split("__")
+            if parts[0] == "competitor" and len(parts) >= 2:
+                tool = parts[1]
+                lang = parts[2] if len(parts) >= 3 else ""
+                cross_language_profiles = {
+                    "mea2_heuristic",
+                    "retained_state_rules",
+                    "async_handoff_rules",
+                }
+                raw = f"{tool}-{lang}" if tool in cross_language_profiles and lang else tool
+            elif parts[0] == "oss" and len(parts) >= 2:
+                raw = f"oss-{parts[1]}"
+            elif parts[0] == "graphene" and len(parts) >= 2:
+                raw = f"graphene-{parts[1]}"
+            else:
+                raw = parts[-1]
+
+        normalized = raw.replace("_", "-")
+        aliases = {
+            "cargo-audit": "cargo-audit",
+            "spotbugs": "spotbugs",
+            "bandit": "bandit",
+            "gosec": "gosec",
+            "semgrep": "semgrep",
+        }
+        return aliases.get(normalized, normalized)
+
+    def _style_x_labels(self, ax) -> None:
+        """Apply readable spacing for dense category axes."""
+        ax.tick_params(axis='x', labelsize=10)
+        for label in ax.get_xticklabels():
+            label.set_rotation(25)
+            label.set_ha('right')
 
     def _expected_escape_for_target(self, language: str, target: str) -> Optional[bool]:
         """Return expected escape for known benchmark files, otherwise None."""
@@ -411,7 +484,8 @@ class PerformanceAnalyzer:
         print("PERFORMANCE SUMMARY")
         print("="*70)
         print(f"Total Results:           {summary['total_results']:,}")
-        print(f"Languages:               {', '.join(summary['languages'])}")
+        display_langs = [self._display_language_name(lang) for lang in summary['languages']]
+        print(f"Languages:               {', '.join(display_langs)}")
         print(f"Total Successes:         {summary['total_successes']:,}")
         print(f"Total Crashes:           {summary['total_crashes']:,}")
         print(f"Escapes Detected:        {summary['total_escapes_detected']:,}")
@@ -436,8 +510,10 @@ class PerformanceAnalyzer:
         success_by_lang = self.df.groupby('language')['success'].agg(['sum', 'count'])
         success_by_lang['rate'] = (success_by_lang['sum'] / success_by_lang['count'] * 100)
         
-        fig, ax = plt.subplots(figsize=(10, 6))
-        bars = ax.bar(success_by_lang.index, success_by_lang['rate'], 
+        display_index = [self._display_language_name(lang) for lang in success_by_lang.index]
+
+        fig, ax = plt.subplots(figsize=(13, 7))
+        bars = ax.bar(display_index, success_by_lang['rate'], 
                       color=sns.color_palette("husl", len(success_by_lang)))
         
         # Add value labels on bars
@@ -450,6 +526,7 @@ class PerformanceAnalyzer:
         ax.set_xlabel('Language', fontsize=12, fontweight='bold')
         ax.set_title('Analysis Success Rate by Language', fontsize=14, fontweight='bold')
         ax.set_ylim([0, 105])
+        self._style_x_labels(ax)
         
         plt.tight_layout()
         plt.savefig('performance_success_rates.png', dpi=150, bbox_inches='tight')
@@ -461,7 +538,7 @@ class PerformanceAnalyzer:
         if self.df is None or self.df.empty or self.df['execution_time_ms'].max() == 0:
             return
         
-        fig, ax = plt.subplots(figsize=(10, 6))
+        fig, ax = plt.subplots(figsize=(13, 7))
         
         # Only include runs with non-zero execution times
         df_filtered = self.df[self.df['execution_time_ms'] > 0]
@@ -471,10 +548,10 @@ class PerformanceAnalyzer:
             return
         
         languages = sorted(df_filtered['language'].unique())
-        data_by_lang = [df_filtered[df_filtered['language'] == lang]['execution_time_ms'].values
-                       for lang in languages]
+        display_languages = [self._display_language_name(lang) for lang in languages]
+        data_by_lang = [df_filtered[df_filtered['language'] == lang]['execution_time_ms'].values for lang in languages]
         
-        bp = ax.boxplot(data_by_lang, tick_labels=languages, patch_artist=True)
+        bp = ax.boxplot(data_by_lang, tick_labels=display_languages, patch_artist=True)
         
         # Color the boxes
         colors = sns.color_palette("husl", len(languages))
@@ -485,6 +562,7 @@ class PerformanceAnalyzer:
         ax.set_xlabel('Language', fontsize=12, fontweight='bold')
         ax.set_title('Execution Time Distribution by Language', fontsize=14, fontweight='bold')
         ax.grid(axis='y', alpha=0.3)
+        self._style_x_labels(ax)
         
         plt.tight_layout()
         plt.savefig('performance_execution_times.png', dpi=150, bbox_inches='tight')
@@ -499,8 +577,10 @@ class PerformanceAnalyzer:
         crash_by_lang = self.df.groupby('language')['crashed'].agg(['sum', 'count'])
         crash_by_lang['rate'] = (crash_by_lang['sum'] / crash_by_lang['count'] * 100)
         
-        fig, ax = plt.subplots(figsize=(10, 6))
-        bars = ax.bar(crash_by_lang.index, crash_by_lang['rate'],
+        display_index = [self._display_language_name(lang) for lang in crash_by_lang.index]
+
+        fig, ax = plt.subplots(figsize=(13, 7))
+        bars = ax.bar(display_index, crash_by_lang['rate'],
                       color=sns.color_palette("Reds", len(crash_by_lang)))
         
         # Add value labels on bars
@@ -513,6 +593,7 @@ class PerformanceAnalyzer:
         ax.set_xlabel('Language', fontsize=12, fontweight='bold')
         ax.set_title('Analysis Crash Rate by Language', fontsize=14, fontweight='bold')
         ax.set_ylim([0, max(105, crash_by_lang['rate'].max() + 5)])
+        self._style_x_labels(ax)
         
         plt.tight_layout()
         plt.savefig('performance_crash_rates.png', dpi=150, bbox_inches='tight')
@@ -527,8 +608,10 @@ class PerformanceAnalyzer:
         escape_by_lang = self.df.groupby('language')['escape_detected'].agg(['sum', 'count'])
         escape_by_lang['rate'] = (escape_by_lang['sum'] / escape_by_lang['count'] * 100)
         
-        fig, ax = plt.subplots(figsize=(10, 6))
-        bars = ax.bar(escape_by_lang.index, escape_by_lang['rate'],
+        display_index = [self._display_language_name(lang) for lang in escape_by_lang.index]
+
+        fig, ax = plt.subplots(figsize=(13, 7))
+        bars = ax.bar(display_index, escape_by_lang['rate'],
                       color=sns.color_palette("Blues", len(escape_by_lang)))
         
         # Add value labels on bars
@@ -541,6 +624,7 @@ class PerformanceAnalyzer:
         ax.set_xlabel('Language', fontsize=12, fontweight='bold')
         ax.set_title('Escape Detection Rate by Language', fontsize=14, fontweight='bold')
         ax.set_ylim([0, 105])
+        self._style_x_labels(ax)
         
         plt.tight_layout()
         plt.savefig('performance_escape_detection.png', dpi=150, bbox_inches='tight')
@@ -552,13 +636,14 @@ class PerformanceAnalyzer:
         if self.df is None or self.df.empty:
             return
         
-        fig, axes = plt.subplots(2, 2, figsize=(16, 12))
+        fig, axes = plt.subplots(2, 2, figsize=(20, 14))
         languages = sorted(self.df['language'].unique())
         
         # 1. Success Rates
         success_by_lang = self.df.groupby('language')['success'].agg(['sum', 'count'])
         success_by_lang['rate'] = (success_by_lang['sum'] / success_by_lang['count'] * 100)
-        axes[0, 0].bar(success_by_lang.index, success_by_lang['rate'],
+        display_success = [self._display_language_name(lang) for lang in success_by_lang.index]
+        axes[0, 0].bar(display_success, success_by_lang['rate'],
                        color=sns.color_palette("husl", len(success_by_lang)))
         axes[0, 0].set_title('Success Rate by Language', fontsize=12, fontweight='bold')
         axes[0, 0].set_ylabel('Rate (%)')
@@ -568,7 +653,8 @@ class PerformanceAnalyzer:
         # 2. Crash Rates
         crash_by_lang = self.df.groupby('language')['crashed'].agg(['sum', 'count'])
         crash_by_lang['rate'] = (crash_by_lang['sum'] / crash_by_lang['count'] * 100)
-        axes[0, 1].bar(crash_by_lang.index, crash_by_lang['rate'],
+        display_crash = [self._display_language_name(lang) for lang in crash_by_lang.index]
+        axes[0, 1].bar(display_crash, crash_by_lang['rate'],
                        color=sns.color_palette("Reds", len(crash_by_lang)))
         axes[0, 1].set_title('Crash Rate by Language', fontsize=12, fontweight='bold')
         axes[0, 1].set_ylabel('Rate (%)')
@@ -577,7 +663,8 @@ class PerformanceAnalyzer:
         # 3. Escape Detection
         escape_by_lang = self.df.groupby('language')['escape_detected'].agg(['sum', 'count'])
         escape_by_lang['rate'] = (escape_by_lang['sum'] / escape_by_lang['count'] * 100)
-        axes[1, 0].bar(escape_by_lang.index, escape_by_lang['rate'],
+        display_escape = [self._display_language_name(lang) for lang in escape_by_lang.index]
+        axes[1, 0].bar(display_escape, escape_by_lang['rate'],
                        color=sns.color_palette("Blues", len(escape_by_lang)))
         axes[1, 0].set_title('Escape Detection Rate by Language', fontsize=12, fontweight='bold')
         axes[1, 0].set_ylabel('Rate (%)')
@@ -586,11 +673,17 @@ class PerformanceAnalyzer:
         
         # 4. Execution Count
         exec_by_lang = self.df.groupby('language').size()
-        axes[1, 1].bar(exec_by_lang.index, exec_by_lang.values,
+        display_exec = [self._display_language_name(lang) for lang in exec_by_lang.index]
+        axes[1, 1].bar(display_exec, exec_by_lang.values,
                        color=sns.color_palette("viridis", len(exec_by_lang)))
         axes[1, 1].set_title('Analysis Execution Count by Language', fontsize=12, fontweight='bold')
         axes[1, 1].set_ylabel('Count')
         axes[1, 1].grid(axis='y', alpha=0.3)
+
+        self._style_x_labels(axes[0, 0])
+        self._style_x_labels(axes[0, 1])
+        self._style_x_labels(axes[1, 0])
+        self._style_x_labels(axes[1, 1])
         
         plt.tight_layout()
         plt.savefig('performance_metrics_grid.png', dpi=150, bbox_inches='tight')
@@ -607,9 +700,10 @@ class PerformanceAnalyzer:
             print("⚠️  No known expected labels found; skipping correctness accuracy chart")
             return
 
-        fig, ax = plt.subplots(figsize=(10, 6))
+        fig, ax = plt.subplots(figsize=(13, 7))
+        display_languages = [self._display_language_name(lang) for lang in correctness_df['language']]
         bars = ax.bar(
-            correctness_df['language'],
+            display_languages,
             correctness_df['accuracy'],
             color=sns.color_palette("crest", len(correctness_df)),
         )
@@ -631,6 +725,7 @@ class PerformanceAnalyzer:
         ax.set_title('Correctness Accuracy by Language (Known Cases)', fontsize=14, fontweight='bold')
         ax.set_ylim([0, 105])
         ax.grid(axis='y', alpha=0.3)
+        self._style_x_labels(ax)
 
         plt.tight_layout()
         plt.savefig('performance_correctness_accuracy.png', dpi=150, bbox_inches='tight')
@@ -647,7 +742,7 @@ class PerformanceAnalyzer:
             print("⚠️  No known expected labels found; skipping correctness confusion chart")
             return
 
-        fig, ax = plt.subplots(figsize=(12, 6))
+        fig, ax = plt.subplots(figsize=(14, 7))
         x = range(len(correctness_df))
         width = 0.2
 
@@ -657,12 +752,13 @@ class PerformanceAnalyzer:
         ax.bar([i + 1.5 * width for i in x], correctness_df['fn'], width=width, label='FN', color='#ef4444')
 
         ax.set_xticks(list(x))
-        ax.set_xticklabels(correctness_df['language'])
+        ax.set_xticklabels([self._display_language_name(lang) for lang in correctness_df['language']])
         ax.set_ylabel('Count', fontsize=12, fontweight='bold')
         ax.set_xlabel('Language', fontsize=12, fontweight='bold')
         ax.set_title('Correctness Confusion Counts by Language', fontsize=14, fontweight='bold')
         ax.legend()
         ax.grid(axis='y', alpha=0.3)
+        self._style_x_labels(ax)
 
         plt.tight_layout()
         plt.savefig('performance_correctness_confusion.png', dpi=150, bbox_inches='tight')
@@ -882,6 +978,7 @@ class PerformanceAnalyzer:
         
         for lang in sorted(self.df['language'].unique()):
             lang_data = self.df[self.df['language'] == lang]
+            display_lang = self._display_language_name(lang)
             success_rate = (lang_data['success'].sum() / len(lang_data) * 100) if len(lang_data) > 0 else 0
             crash_rate = (lang_data['crashed'].sum() / len(lang_data) * 100) if len(lang_data) > 0 else 0
             escape_rate = (lang_data['escape_detected'].sum() / len(lang_data) * 100) if len(lang_data) > 0 else 0
@@ -909,7 +1006,7 @@ class PerformanceAnalyzer:
             
             html_content += f"""
                 <tr>
-                    <td><strong>{lang}</strong></td>
+                    <td><strong>{display_lang}</strong></td>
                     <td>{len(lang_data)}</td>
                     <td>{success_rate:.1f}%</td>
                     <td>{crash_rate:.1f}%</td>

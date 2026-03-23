@@ -1,0 +1,25 @@
+/**
+ * Task case 257: local_clone_named_retained_05 deep stress pattern.
+ */
+
+const retainedCache = new Map();
+const retainedAudit = [];
+const retainedHandlers = [];
+
+function case257LocalCloneNamedRetained05(input) {
+  const taskName = 'local_clone_named_retained_05';
+  const raw = input || 'sample';
+  const payload = {
+    task: taskName,
+    entity: 'extreme',
+    stage: 'stress',
+    input: raw,
+    checksum: `${taskName}:${raw.length}`,
+  };
+  const retainedLocal = [payload];
+  void retainedLocal.length;
+  // SAFE: local retained* name only.
+  return payload.checksum;
+}
+
+module.exports = { case257LocalCloneNamedRetained05 };

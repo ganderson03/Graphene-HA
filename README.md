@@ -35,9 +35,76 @@ uv run graphene run-all --language python --generate 10
 uv run graphene clear --log-dir logs
 ```
 
-## 100-Case Suites Per Language
+## Graphene vs Competitor Benchmark Workflow
 
-Each language now includes an annotated 100-case suite with realistic data-flow patterns.
+Use this workflow to run Graphene test suites through competitor analyzers and
+generate the same dashboard-style graphs used by Graphene performance analysis.
+
+1. Run Graphene baseline (writes Graphene logs):
+
+```bash
+uv run graphene run-all --generate 1 --log-dir logs
+```
+
+2. Collect competitor results in Graphene-compatible `results.csv` sessions:
+
+```bash
+python scripts/collect_competitor_benchmarks.py --log-dir logs_competitors --limit 100
+```
+
+3. Build combined comparison dashboard:
+
+```bash
+python scripts/build_comparison_dashboard.py \
+	--graphene-logs logs \
+	--competitor-logs logs_competitors \
+	--combined-logs logs_comparison \
+	--output-dir comparison_dashboard
+```
+
+4. Open:
+
+```text
+comparison_dashboard/performance_dashboard.html
+```
+
+### One-Command Full Run
+
+Run Graphene baseline, collect competitor data, and build the HTML dashboard in one command:
+
+```bash
+python scripts/run_full_comparison.py
+```
+
+Common overrides:
+
+```bash
+python scripts/run_full_comparison.py \
+	--generate 1 \
+	--competitor-limit 100 \
+	--graphene-logs logs \
+	--competitor-logs logs_competitors \
+	--combined-logs logs_comparison \
+	--output-dir comparison_dashboard
+```
+
+Notes:
+- Comparison labels appear as prefixed language keys (for example `graphene__python`, `competitor__go_native_escape__go`).
+- Competitor collection uses escape-focused analyzers: native Go compiler escape analysis, language-specific escape pattern analyzers, and cross-language heuristic profiles (`mea2_heuristic`, `retained_state_rules`, `async_handoff_rules`).
+
+### Open-Source Benchmark Mode
+
+To complement synthetic suites with real-world code, clone/sample OSS repositories and run static analysis targets:
+
+```bash
+python scripts/run_open_source_benchmarks.py --per-project 25 --timeout 5 --log-dir logs_oss_bench
+```
+
+This writes a CSV report at `benchmarks/oss_benchmark_report.csv` and Graphene session logs in the selected log directory.
+
+## 300-Case Suites Per Language
+
+Each language now includes an annotated 300-case suite with realistic and adversarial data-flow patterns.
 
 See [tests/README.md](tests/README.md#language-reference) for language-specific suite locations and example targets.
 

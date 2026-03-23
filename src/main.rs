@@ -91,6 +91,10 @@ enum Commands {
         /// Filter by language (python, java, javascript, go, rust)
         #[arg(long)]
         language: Option<String>,
+
+        /// Analysis mode: dynamic, static, or both. Default is both.
+        #[arg(short = 'm', long, default_value = "both")]
+        analysis_mode: CliAnalysisMode,
     },
 
     /// List available analyzers
@@ -145,8 +149,16 @@ async fn main() -> Result<()> {
             generate,
             output_dir,
             language,
+            analysis_mode,
         } => {
-            orchestrator::run_all_tests(test_dir, generate, output_dir, language).await?;
+            orchestrator::run_all_tests(
+                test_dir,
+                generate,
+                output_dir,
+                language,
+                analysis_mode.into(),
+            )
+            .await?;
         }
         Commands::List { detailed } => {
             orchestrator::list_analyzers(detailed).await?;

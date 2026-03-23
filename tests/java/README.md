@@ -4,7 +4,7 @@
 
 - src/main/java/com/escape/tests/cases/
 
-Contains 100 case classes (`Case001CacheProfile.java` ... `Case100Ledger.java`), each with a public static `execute()` method.
+Contains 200+ case classes (`Case001CacheProfile.java` ... `Case200ClosureNoEscape10.java`), each with a public static `execute()` method.
 
 ## Example target
 

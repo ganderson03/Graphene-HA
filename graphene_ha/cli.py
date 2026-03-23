@@ -79,6 +79,9 @@ def _run_run_all(args):
     
     if args.language:
         cmd.extend(["--language", args.language])
+
+    if hasattr(args, "analysis_mode"):
+        cmd.extend(["--analysis-mode", args.analysis_mode])
     
     result = subprocess.run(cmd, check=False)
     return result.returncode
@@ -150,6 +153,12 @@ def main():
     runall_parser.add_argument("--generate", type=int, default=10, help="Number of inputs to generate per test (default: 10)")
     runall_parser.add_argument("--log-dir", default="logs", help="Output directory for reports (default: logs)")
     runall_parser.add_argument("--language", help="Filter by language (python, java, javascript, go, rust)")
+    runall_parser.add_argument(
+        "--analysis-mode",
+        choices=["dynamic", "static", "both"],
+        default="both",
+        help="Analysis mode: dynamic, static, or both (default: both).",
+    )
     runall_parser.add_argument("--verbose", action="store_true", help="Enable verbose logging")
     
     # List command

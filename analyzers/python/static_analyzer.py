@@ -58,11 +58,30 @@ class ObjectEscapeAnalyzer(ast.NodeVisitor):
         # Track imports for cross-file analysis
         self.imports: Dict[str, str] = {}  # alias -> module
         self.import_froms: Dict[str, Tuple[str, str]] = {}  # name -> (module, orig_name)
+        # Coarse summaries: function_name -> whether passing an object can escape.
+        self.function_escape_summaries: Dict[str, bool] = {}
         # Scan imports first
         self._scan_imports()
+        self._build_function_escape_summaries()
         self.join_in_all_paths: Set[str] = set()
         self.join_in_some_paths: Set[str] = set()
         self.reassigned_vars: Set[str] = set()
+
+    def _looks_like_object_allocation(self, node: ast.AST) -> bool:
+        """Best-effort check for values that allocate/hold object state."""
+        return isinstance(
+            node,
+            (
+                ast.Dict,
+                ast.List,
+                ast.Set,
+                ast.ListComp,
+                ast.DictComp,
+                ast.SetComp,
+                ast.GeneratorExp,
+                ast.Call,
+            ),
+        )
         
     def visit_FunctionDef(self, node: ast.FunctionDef):
         """Visit function definitions."""
@@ -130,10 +149,10 @@ class ObjectEscapeAnalyzer(ast.NodeVisitor):
                 self.generic_visit(node)
                 return
         
-        # Check if returning a local variable or object
+        # Check if returning a tracked local object allocation.
         returned_vars = self._extract_names(node.value)
         for var in returned_vars:
-            if var in self.local_vars or var in self.allocated_objects:
+            if var in self.allocated_objects:
                 self.escapes.append(EscapeInfo(
                     escape_type="return",
                     line=node.lineno,
@@ -180,6 +199,26 @@ class ObjectEscapeAnalyzer(ast.NodeVisitor):
         """Track variable assignments and object allocation."""
         if not self.in_target_function:
             return
+
+        # Detect storing tracked local objects into module/global containers.
+        stored_vars = self._extract_names(node.value)
+        for target in node.targets:
+            if isinstance(target, ast.Subscript) and isinstance(target.value, ast.Name):
+                container = target.value.id
+                # Heuristic: if the container is not a local var/parameter, treat it
+                # as module/global state and mark tracked objects as escaping.
+                if container not in self.local_vars:
+                    for var in stored_vars:
+                        if var in self.allocated_objects:
+                            self.escapes.append(EscapeInfo(
+                                escape_type="global",
+                                line=node.lineno,
+                                column=node.col_offset,
+                                variable_name=var,
+                                reason=f"Object '{var}' stored in global/module container '{container}'",
+                                confidence="high",
+                                code_snippet=self._get_code_snippet(node.lineno)
+                            ))
         
         # Add assigned variables to local_vars
         for target in node.targets:
@@ -189,6 +228,12 @@ class ObjectEscapeAnalyzer(ast.NodeVisitor):
                 if name in self.concurrency_objects:
                     self.reassigned_vars.add(name)
             self.local_vars.update(names)
+
+            # Track object-like allocations so later escape checks can avoid
+            # flagging primitive-only dataflow (e.g., len(raw)).
+            if self._looks_like_object_allocation(node.value):
+                for name in names:
+                    self.allocated_objects[name] = (node.lineno, node.col_offset)
         
         # Track concurrency object creation
         if isinstance(node.value, ast.Call):
@@ -230,12 +275,29 @@ class ObjectEscapeAnalyzer(ast.NodeVisitor):
         """Detect parameter escapes and function calls."""
         if not self.in_target_function:
             return
+
+        callee_may_escape = False
+        if isinstance(node.func, ast.Name):
+            safe_builtins = {
+                'len', 'str', 'int', 'float', 'bool', 'abs', 'min', 'max',
+                'sum', 'sorted', 'round', 'range', 'enumerate', 'zip',
+                'list', 'dict', 'set', 'tuple', 'all', 'any', 'print'
+            }
+            # Treat non-trivial function calls as potential escape sinks,
+            # while excluding common pure builtins.
+            callee_may_escape = (
+                node.func.id not in safe_builtins
+                or self.function_escape_summaries.get(node.func.id, False)
+            )
+        elif isinstance(node.func, ast.Attribute):
+            # Imported module calls are handled through existing cross-file logic.
+            callee_may_escape = self._check_function_call_escapes(node)
         
-        # Check for variables passed as arguments (parameter escape)
+        # Check for tracked objects passed as arguments (parameter escape).
         for arg in node.args:
             escaped_vars = self._extract_names(arg)
             for var in escaped_vars:
-                if var in self.local_vars or var in self.allocated_objects:
+                if var in self.allocated_objects and callee_may_escape:
                     self.escapes.append(EscapeInfo(
                         escape_type="parameter",
                         line=node.lineno,
@@ -250,7 +312,7 @@ class ObjectEscapeAnalyzer(ast.NodeVisitor):
         for keyword in node.keywords:
             if isinstance(keyword.value, ast.Name):
                 var = keyword.value.id
-                if var in self.local_vars or var in self.allocated_objects:
+                if var in self.allocated_objects and callee_may_escape:
                     self.escapes.append(EscapeInfo(
                         escape_type="parameter",
                         line=node.lineno,
@@ -400,6 +462,58 @@ class ObjectEscapeAnalyzer(ast.NodeVisitor):
                         self.import_froms[name] = (module, alias.name)
         except:
             pass
+
+    def _build_function_escape_summaries(self):
+        """Build coarse per-function summaries used by visit_Call."""
+        try:
+            tree = ast.parse(self.source_code)
+        except Exception:
+            return
+
+        for node in tree.body:
+            if not isinstance(node, ast.FunctionDef):
+                continue
+
+            params = {arg.arg for arg in node.args.args}
+            if not params:
+                self.function_escape_summaries[node.name] = False
+                continue
+
+            local_names = set(params)
+            declared_globals: Set[str] = set()
+            for child in ast.walk(node):
+                if isinstance(child, ast.Global):
+                    declared_globals.update(child.names)
+                elif isinstance(child, ast.Assign):
+                    for target in child.targets:
+                        local_names.update(self._extract_names(target))
+
+            escapes = False
+            for child in ast.walk(node):
+                if isinstance(child, ast.Return) and child.value is not None:
+                    if any(name in params for name in self._extract_names(child.value)):
+                        escapes = True
+                        break
+
+                if isinstance(child, ast.Assign):
+                    value_names = set(self._extract_names(child.value))
+                    if not (value_names & params):
+                        continue
+
+                    for target in child.targets:
+                        if isinstance(target, ast.Subscript) and isinstance(target.value, ast.Name):
+                            container = target.value.id
+                            if container not in local_names:
+                                escapes = True
+                                break
+                        if isinstance(target, ast.Name) and target.id in declared_globals:
+                            escapes = True
+                            break
+
+                    if escapes:
+                        break
+
+            self.function_escape_summaries[node.name] = escapes
     
     def _resolve_imported_function(self, func_ref: str) -> Optional[str]:
         """Try to resolve an imported function to its source file."""

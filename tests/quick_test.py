@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Quick smoke test for the split 100-case suites.
+Quick smoke test for the split 200+ case suites.
 
 This script samples a few Python and Node.js cases and reports classifier accuracy.
 """

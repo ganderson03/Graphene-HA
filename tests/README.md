@@ -4,18 +4,28 @@ Language test programs for object/data escape analysis.
 
 ## Language Reference
 
-### 100-Case Suites
+### 300+ Case Suites
 
-- **Python**: tests/python/cases/case_001_cache_profile.py ... case_100__ledger.py
-- **JavaScript**: tests/nodejs/cases/case_001_cache_profile.js ... case_100__ledger.js
-- **Go**: tests/go/cases/case_001_cache_profile.go ... case_100__ledger.go
-- **Rust**: tests/rust/cases/case_001_cache_profile.rs ... case_100__ledger.rs
-- **Java**: tests/java/src/main/java/com/escape/tests/cases/Case001CacheProfile.java ... Case100Ledger.java
+- **Python**: tests/python/cases/case_001_cache_profile.py ... case_300_ephemeral_lambda_use_09.py
+- **JavaScript**: tests/nodejs/cases/case_001_cache_profile.js ... case_300_ephemeral_lambda_use_09.js
+- **Go**: tests/go/cases/case_001_cache_profile.go ... case_300_ephemeral_lambda_use_09.go
+- **Rust**: tests/rust/cases/case_001_cache_profile.rs ... case_300_ephemeral_lambda_use_09.rs
+- **Java**: tests/java/src/main/java/com/escape/tests/cases/Case001CacheProfile.java ... Case300EphemeralLambdaUse09.java
 
 Each suite provides:
-- 100 realistic functions/methods
+- 300+ realistic and adversarial functions/methods
 - inline ESCAPE or SAFE comments
 - mixed patterns (global retention, retained sink calls, closure capture, local-safe behavior)
+- stress variants designed to provoke false positives/false negatives
+
+### Case Generation Helpers
+
+Regenerate expanded suites with:
+
+```bash
+python tests/generate_additional_cases.py
+python tests/generate_extreme_cases.py
+```
 
 ### Example Targets by Language
 
