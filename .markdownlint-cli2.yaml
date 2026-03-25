@@ -1,0 +1,9 @@
+globs:
+  - "**/*.md"
+  - "!logs/**"
+  - "!tests/**"
+  - "!benchmarks/oss_sources/**"
+  - "!analyzers/java/.github/java-upgrade/**"
+
+config:
+  MD013: false

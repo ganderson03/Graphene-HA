@@ -10,16 +10,17 @@ Each bridge executes or parses language-specific targets and reports escape find
 
 ```text
 analyzers/
-	python/
-	nodejs/
-	go/
-	java/
-	rust/
+ python/
+ nodejs/
+ go/
+ java/
+ rust/
 ```
 
 ## Protocol Summary
 
 Request fields:
+
 - session_id
 - target
 - inputs
@@ -28,6 +29,7 @@ Request fields:
 - options
 
 Response fields:
+
 - session_id
 - language
 - analyzer_version

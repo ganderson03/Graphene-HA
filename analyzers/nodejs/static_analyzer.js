@@ -126,6 +126,7 @@ function analyzeFile(sourceFile, functionName) {
         const localVars = new Set();
         const localObjectVars = new Set();
         const objectDependencies = new Map();
+        const helperSinkDispatch = new Map(); // helper -> {param, container}
         
         for (let i = 0; i < lines.length; i++) {
             const line = lines[i];
@@ -162,6 +163,42 @@ function analyzeFile(sourceFile, functionName) {
                         .filter((id) => id !== localName && (localVars.has(id) || localObjectVars.has(id)));
                     if (referencedLocals.length > 0) {
                         objectDependencies.set(localName, new Set(referencedLocals));
+                    }
+                }
+
+                const helperSinkMatch = trimmed.match(
+                    /^(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*\(([A-Za-z_$][\w$]*)\)\s*=>\s*([A-Za-z_$][\w$]*)\.(set|push|unshift|add)\((.*)\)\s*;?$/
+                );
+                if (helperSinkMatch) {
+                    const helper = helperSinkMatch[1];
+                    const param = helperSinkMatch[2];
+                    const container = helperSinkMatch[3];
+                    const args = helperSinkMatch[5] || '';
+
+                    const argIds = extractIdentifiers(args);
+                    if (isRetainerContainer(container, moduleRetainers) && argIds.includes(param)) {
+                        helperSinkDispatch.set(helper, { param, container });
+                    }
+                }
+
+                const helperCallMatch = trimmed.match(/^([A-Za-z_$][\w$]*)\((.*)\)\s*;?$/);
+                if (helperCallMatch) {
+                    const callee = helperCallMatch[1];
+                    const argExpr = helperCallMatch[2] || '';
+                    if (helperSinkDispatch.has(callee)) {
+                        const sinkInfo = helperSinkDispatch.get(callee);
+                        const escapedVars = resolveEscapedVariables(argExpr, localVars, localObjectVars, objectDependencies);
+                        for (const escapedVar of escapedVars) {
+                            addEscape(escapes, dedupe, {
+                                escape_type: 'global',
+                                line: lineNum,
+                                column: Math.max(trimmed.indexOf(callee), 0),
+                                variable_name: escapedVar,
+                                reason: `Local object '${escapedVar}' passed through helper '${callee}' into retained container '${sinkInfo.container}'`,
+                                confidence: 'high',
+                                code_snippet: trimmed
+                            });
+                        }
                     }
                 }
 

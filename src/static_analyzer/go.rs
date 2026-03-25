@@ -97,6 +97,7 @@ fn analyze_function(
 ) -> Vec<StaticEscape> {
     let lines: Vec<&str> = source.lines().collect();
     let module_retainers = collect_package_retainers(&lines);
+    let bridge_method_sinks = collect_go_bridge_method_sinks(&lines, &module_retainers);
 
     let mut escapes = vec![];
     let mut dedupe: HashSet<String> = HashSet::new();
@@ -111,6 +112,8 @@ fn analyze_function(
     let mut local_vars: HashSet<String> = HashSet::new();
     let mut local_object_vars: HashSet<String> = HashSet::new();
     let mut object_dependencies: HashMap<String, HashSet<String>> = HashMap::new();
+    let mut helper_sink_dispatch: HashMap<String, (String, String)> = HashMap::new();
+    let mut interface_bridge_bindings: HashMap<String, String> = HashMap::new();
     
     for (idx, line) in lines.iter().enumerate() {
         let trimmed = line.trim();
@@ -143,6 +146,87 @@ fn analyze_function(
                             .entry(local_name.clone())
                             .or_default()
                             .insert(id);
+                    }
+                }
+            }
+
+            if let Some((binding, concrete_type)) = extract_go_interface_binding(trimmed) {
+                interface_bridge_bindings.insert(binding, concrete_type);
+            }
+
+            if let Some((helper_name, param_name, container_name)) = extract_inline_helper_sink(trimmed)
+            {
+                if is_retainer_container(&container_name, &module_retainers) {
+                    helper_sink_dispatch.insert(helper_name, (param_name, container_name));
+                }
+            }
+
+            if let Some((callee, arg_expr)) = extract_simple_call(trimmed) {
+                if let Some((_param_name, container_name)) = helper_sink_dispatch.get(&callee) {
+                    let escaped_vars = resolve_escaped_variables(
+                        &arg_expr,
+                        &local_vars,
+                        &local_object_vars,
+                        &object_dependencies,
+                    );
+
+                    for escaped_var in escaped_vars {
+                        let reason = format!(
+                            "Local object '{}' passed through helper '{}' into retained container '{}'",
+                            escaped_var, callee, container_name
+                        );
+                        push_unique_escape(
+                            &mut escapes,
+                            &mut dedupe,
+                            "global",
+                            EscapeType::GlobalEscape,
+                            source_file,
+                            idx + 1,
+                            trimmed.find(&callee).unwrap_or(0),
+                            function_name,
+                            escaped_var,
+                            reason,
+                            ConfidenceLevel::High,
+                            Some(trimmed.to_string()),
+                        );
+                    }
+                }
+            }
+
+            if let Some((receiver, method, arg_expr)) = extract_receiver_method_call(trimmed) {
+                if let Some(concrete_type) = interface_bridge_bindings.get(&receiver) {
+                    if bridge_method_sinks
+                        .get(concrete_type)
+                        .map(|methods| methods.contains(&method))
+                        .unwrap_or(false)
+                    {
+                        let escaped_vars = resolve_escaped_variables(
+                            &arg_expr,
+                            &local_vars,
+                            &local_object_vars,
+                            &object_dependencies,
+                        );
+
+                        for escaped_var in escaped_vars {
+                            let reason = format!(
+                                "Local object '{}' passed through interface bridge '{}.{}' into retained container",
+                                escaped_var, receiver, method
+                            );
+                            push_unique_escape(
+                                &mut escapes,
+                                &mut dedupe,
+                                "global",
+                                EscapeType::GlobalEscape,
+                                source_file,
+                                idx + 1,
+                                trimmed.find(&receiver).unwrap_or(0),
+                                function_name,
+                                escaped_var,
+                                reason,
+                                ConfidenceLevel::High,
+                                Some(trimmed.to_string()),
+                            );
+                        }
                     }
                 }
             }
@@ -357,6 +441,233 @@ fn analyze_function(
 
 fn strip_comment(line: &str) -> &str {
     line.split("//").next().unwrap_or("").trim()
+}
+
+fn extract_inline_helper_sink(line: &str) -> Option<(String, String, String)> {
+    // Example:
+    // sink := func(obj map[string]string) { retainedCase202 = append(retainedCase202, obj) }
+    let no_comment = strip_comment(line);
+    if !no_comment.contains(":= func(") || !no_comment.contains("append(") {
+        return None;
+    }
+
+    let helper_name = no_comment.split(":=").next()?.trim().to_string();
+    if helper_name.is_empty() {
+        return None;
+    }
+
+    let param_start = no_comment.find("func(")? + "func(".len();
+    let param_end = no_comment[param_start..].find(')')? + param_start;
+    let param_decl = no_comment[param_start..param_end].trim();
+    let param_name = param_decl.split_whitespace().next()?.trim().to_string();
+    if param_name.is_empty() {
+        return None;
+    }
+
+    let body_start = no_comment.find('{')? + 1;
+    let body = no_comment[body_start..].trim_end_matches('}').trim();
+    let assign_idx = body.find('=')?;
+    let container = body[..assign_idx].trim().to_string();
+
+    let append_start = body.find("append(")? + "append(".len();
+    let append_end = body[append_start..].find(')')? + append_start;
+    let append_args = body[append_start..append_end].trim();
+    let parts: Vec<&str> = append_args.split(',').map(|p| p.trim()).collect();
+    if parts.len() < 2 {
+        return None;
+    }
+    if parts[1] != param_name {
+        return None;
+    }
+
+    Some((helper_name, param_name, container))
+}
+
+fn extract_simple_call(line: &str) -> Option<(String, String)> {
+    // Match simple local helper call: helper(payload)
+    let no_comment = strip_comment(line).trim().trim_end_matches(';').trim();
+    if no_comment.is_empty() || no_comment.contains('.') || no_comment.starts_with("return ") {
+        return None;
+    }
+
+    let open = no_comment.find('(')?;
+    let close = no_comment.rfind(')')?;
+    if close <= open {
+        return None;
+    }
+
+    let callee = no_comment[..open].trim().to_string();
+    if callee.is_empty() {
+        return None;
+    }
+
+    let arg_expr = no_comment[open + 1..close].trim().to_string();
+    if arg_expr.is_empty() {
+        return None;
+    }
+
+    Some((callee, arg_expr))
+}
+
+fn extract_go_interface_binding(line: &str) -> Option<(String, String)> {
+    // Supports:
+    //   var s iface = concreteType{}
+    //   s := concreteType{}
+    let no_comment = strip_comment(line).trim().trim_end_matches(';').trim();
+    if no_comment.is_empty() {
+        return None;
+    }
+
+    if let Some(rest) = no_comment.strip_prefix("var ") {
+        let assign_idx = rest.find('=')?;
+        let left = rest[..assign_idx].trim();
+        let rhs = rest[assign_idx + 1..].trim();
+        if !rhs.ends_with("{}") {
+            return None;
+        }
+        let concrete = rhs.trim_end_matches("{}").trim().to_string();
+        let binding = left.split_whitespace().next()?.trim().to_string();
+        if binding.is_empty() || concrete.is_empty() {
+            return None;
+        }
+        return Some((binding, concrete));
+    }
+
+    if let Some(assign_idx) = no_comment.find(":=") {
+        let left = no_comment[..assign_idx].trim();
+        let rhs = no_comment[assign_idx + 2..].trim();
+        if rhs.ends_with("{}") {
+            let concrete = rhs.trim_end_matches("{}").trim().to_string();
+            if !left.is_empty() && !concrete.is_empty() {
+                return Some((left.to_string(), concrete));
+            }
+        }
+    }
+
+    None
+}
+
+fn extract_receiver_method_call(line: &str) -> Option<(String, String, String)> {
+    // Match receiver.method(arg)
+    let no_comment = strip_comment(line).trim().trim_end_matches(';').trim();
+    if no_comment.is_empty() {
+        return None;
+    }
+
+    let dot_idx = no_comment.find('.')?;
+    let open_idx = no_comment.find('(')?;
+    let close_idx = no_comment.rfind(')')?;
+    if !(dot_idx < open_idx && open_idx < close_idx) {
+        return None;
+    }
+
+    let receiver = no_comment[..dot_idx].trim().to_string();
+    let method = no_comment[dot_idx + 1..open_idx].trim().to_string();
+    let arg_expr = no_comment[open_idx + 1..close_idx].trim().to_string();
+    if receiver.is_empty() || method.is_empty() || arg_expr.is_empty() {
+        return None;
+    }
+
+    Some((receiver, method, arg_expr))
+}
+
+fn collect_go_bridge_method_sinks(
+    lines: &[&str],
+    module_retainers: &HashSet<String>,
+) -> HashMap<String, HashSet<String>> {
+    let mut sink_methods: HashMap<String, HashSet<String>> = HashMap::new();
+
+    let mut in_method = false;
+    let mut brace_depth: i32 = 0;
+    let mut receiver_type = String::new();
+    let mut method_name = String::new();
+    let mut param_name = String::new();
+    let mut stores_to_retainer = false;
+
+    for line in lines {
+        let trimmed = strip_comment(line).trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        if !in_method {
+            if let Some((recv, method, param)) = extract_go_method_header(trimmed) {
+                in_method = true;
+                receiver_type = recv;
+                method_name = method;
+                param_name = param;
+                stores_to_retainer = false;
+                brace_depth = trimmed.chars().filter(|&c| c == '{').count() as i32
+                    - trimmed.chars().filter(|&c| c == '}').count() as i32;
+            }
+            continue;
+        }
+
+        if let Some((container, expr, _)) = extract_append_store(trimmed) {
+            if is_retainer_container(&container, module_retainers)
+                && extract_identifiers(&expr).into_iter().any(|id| id == param_name)
+            {
+                stores_to_retainer = true;
+            }
+        }
+        if let Some((container, expr)) = extract_index_assignment(trimmed) {
+            if is_retainer_container(&container, module_retainers)
+                && extract_identifiers(&expr).into_iter().any(|id| id == param_name)
+            {
+                stores_to_retainer = true;
+            }
+        }
+
+        brace_depth += trimmed.chars().filter(|&c| c == '{').count() as i32;
+        brace_depth -= trimmed.chars().filter(|&c| c == '}').count() as i32;
+
+        if brace_depth <= 0 {
+            if stores_to_retainer && !receiver_type.is_empty() && !method_name.is_empty() {
+                sink_methods
+                    .entry(receiver_type.clone())
+                    .or_default()
+                    .insert(method_name.clone());
+            }
+            in_method = false;
+            receiver_type.clear();
+            method_name.clear();
+            param_name.clear();
+            stores_to_retainer = false;
+            brace_depth = 0;
+        }
+    }
+
+    sink_methods
+}
+
+fn extract_go_method_header(line: &str) -> Option<(String, String, String)> {
+    // Example: func (case205Bridge) Put(v map[string]string) {
+    if !line.starts_with("func (") {
+        return None;
+    }
+
+    let recv_start = line.find('(')? + 1;
+    let recv_end = line[recv_start..].find(')')? + recv_start;
+    let recv_decl = line[recv_start..recv_end].trim();
+    let recv_parts: Vec<&str> = recv_decl.split_whitespace().collect();
+    let receiver_type = recv_parts.last()?.trim().to_string();
+
+    let after_recv = line[recv_end + 1..].trim();
+    let method_end = after_recv.find('(')?;
+    let method_name = after_recv[..method_end].trim().to_string();
+    if method_name.is_empty() {
+        return None;
+    }
+
+    let params_start = method_end + 1;
+    let params_end = after_recv[params_start..].find(')')? + params_start;
+    let params = after_recv[params_start..params_end].trim();
+    let param_name = params.split_whitespace().next()?.trim().to_string();
+    if param_name.is_empty() {
+        return None;
+    }
+
+    Some((receiver_type, method_name, param_name))
 }
 
 fn is_retainer_name(name: &str) -> bool {

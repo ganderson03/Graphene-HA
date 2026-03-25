@@ -84,6 +84,7 @@ dmypy.json
 
 # Logs
 logs/
+/logs_*/
 /logs_competitors*/
 /logs_comparison*/
 *.log

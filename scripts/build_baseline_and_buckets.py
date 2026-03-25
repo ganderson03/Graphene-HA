@@ -41,6 +41,8 @@ def _tool_name(language_key: str) -> str:
         return parts[1] if len(parts) >= 2 else "competitor"
     if language_key.startswith("oss__"):
         return "oss"
+    if language_key in {"go", "java", "javascript", "python", "rust"}:
+        return "graphene"
     return language_key
 
 
@@ -165,7 +167,24 @@ def build_reports(logs_dir: Path, out_dir: Path) -> None:
             }
         )
 
-    leaderboard_df = pd.DataFrame(gap_rows).sort_values("language")
+    if gap_rows:
+        leaderboard_df = pd.DataFrame(gap_rows).sort_values("language")
+    else:
+        leaderboard_df = pd.DataFrame(
+            columns=[
+                "language",
+                "graphene_key",
+                "graphene_accuracy",
+                "graphene_precision",
+                "graphene_recall",
+                "graphene_fp",
+                "graphene_fn",
+                "graphene_crash_rate",
+                "best_competitor_key",
+                "best_competitor_accuracy",
+                "accuracy_gap_vs_best_competitor",
+            ]
+        )
     leaderboard_csv = out_dir / "baseline_graphene_vs_best_competitor.csv"
     leaderboard_df.to_csv(leaderboard_csv, index=False)
 
@@ -256,7 +275,7 @@ def build_reports(logs_dir: Path, out_dir: Path) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Build baseline leaderboard and Graphene miss buckets")
-    parser.add_argument("--logs-dir", default="logs_comparison", help="Combined logs directory")
+    parser.add_argument("--logs-dir", default="logs/comparison", help="Combined logs directory")
     parser.add_argument("--out-dir", default="comparison_dashboard", help="Output directory")
     args = parser.parse_args()
 

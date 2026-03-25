@@ -106,28 +106,28 @@ def write_session(log_root: Path, language_key: str, result: CaseResult) -> None
 
 def collect_python_cases(limit: int) -> list[Path]:
     cases = sorted((ROOT / "tests" / "python" / "cases").glob("case_*.py"))
-    return cases[:limit]
+    return cases if limit <= 0 else cases[:limit]
 
 
 def collect_js_cases(limit: int) -> list[Path]:
     cases = sorted((ROOT / "tests" / "nodejs" / "cases").glob("case_*.js"))
-    return cases[:limit]
+    return cases if limit <= 0 else cases[:limit]
 
 
 def collect_go_cases(limit: int) -> list[Path]:
     cases = sorted((ROOT / "tests" / "go" / "cases").glob("case_*.go"))
-    return cases[:limit]
+    return cases if limit <= 0 else cases[:limit]
 
 
 def collect_rust_cases(limit: int) -> list[Path]:
     cases = sorted((ROOT / "tests" / "rust" / "cases").glob("case_*.rs"))
-    return cases[:limit]
+    return cases if limit <= 0 else cases[:limit]
 
 
 def collect_java_cases(limit: int) -> list[Path]:
     base = ROOT / "tests" / "java" / "src" / "main" / "java" / "com" / "escape" / "tests" / "cases"
     cases = sorted(base.glob("Case*.java"))
-    return cases[:limit]
+    return cases if limit <= 0 else cases[:limit]
 
 
 def _has_escape_markers(text: str, patterns: list[str]) -> bool:
@@ -407,8 +407,8 @@ def persist_results(log_root: Path, language_key: str, rows: Iterable[CaseResult
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Collect competitor benchmark logs")
-    parser.add_argument("--log-dir", default="logs_competitors", help="Output log root (default: logs_competitors)")
-    parser.add_argument("--limit", type=int, default=100, help="Cases per language (default: 100)")
+    parser.add_argument("--log-dir", default="logs/competitors", help="Output log root (default: logs/competitors)")
+    parser.add_argument("--limit", type=int, default=0, help="Cases per language; use 0 for all (default: 0)")
     args = parser.parse_args()
 
     log_root = ROOT / args.log_dir

@@ -30,10 +30,10 @@ def copy_logs_with_prefix(src_root: Path, dst_root: Path, prefix: str) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Build Graphene vs competitor dashboard")
-    parser.add_argument("--graphene-logs", default="logs", help="Graphene logs dir (default: logs)")
-    parser.add_argument("--competitor-logs", default="logs_competitors", help="Competitor logs dir (default: logs_competitors)")
-    parser.add_argument("--oss-logs", default="logs_oss_bench", help="OSS Graphene logs dir (default: logs_oss_bench)")
-    parser.add_argument("--combined-logs", default="logs_comparison", help="Temporary combined logs dir (default: logs_comparison)")
+    parser.add_argument("--graphene-logs", default="logs/graphene", help="Graphene logs dir (default: logs/graphene)")
+    parser.add_argument("--competitor-logs", default="logs/competitors", help="Competitor logs dir (default: logs/competitors)")
+    parser.add_argument("--oss-logs", default="logs/oss_bench", help="OSS Graphene logs dir (default: logs/oss_bench)")
+    parser.add_argument("--combined-logs", default="logs/comparison", help="Temporary combined logs dir (default: logs/comparison)")
     parser.add_argument("--output-dir", default="comparison_dashboard", help="Dashboard output folder (default: comparison_dashboard)")
     args = parser.parse_args()
 

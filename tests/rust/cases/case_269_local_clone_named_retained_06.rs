@@ -1,7 +1,11 @@
+#![allow(unused)]
+
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 
+#[allow(dead_code)]
 static RETAINED_AUDIT: OnceLock<Mutex<Vec<HashMap<String, String>>>> = OnceLock::new();
+#[allow(dead_code)]
 static RETAINED_HANDLERS: OnceLock<Mutex<Vec<String>>> = OnceLock::new();
 
 pub fn case_269_local_clone_named_retained_06(input: String) -> String {

@@ -29,14 +29,24 @@ class Project:
 PROJECTS = [
     Project("python", "psf/requests"),
     Project("python", "pallets/flask"),
+    Project("python", "celery/celery"),
+    Project("python", "aio-libs/aiohttp"),
     Project("javascript", "axios/axios"),
     Project("javascript", "expressjs/express"),
+    Project("javascript", "socketio/socket.io"),
+    Project("javascript", "fastify/fastify"),
     Project("go", "gin-gonic/gin"),
     Project("go", "spf13/cobra"),
+    Project("go", "go-chi/chi"),
+    Project("go", "gorilla/websocket"),
     Project("rust", "serde-rs/serde"),
     Project("rust", "tokio-rs/bytes"),
+    Project("rust", "tokio-rs/tokio"),
+    Project("rust", "hyperium/hyper"),
     Project("java", "google/gson"),
-    Project("java", "google/guava"),
+    Project("java", "apache/commons-lang"),
+    Project("java", "apache/commons-collections"),
+    Project("java", "vavr-io/vavr"),
 ]
 
 SKIP_DIRS = {
@@ -147,7 +157,7 @@ def collect_candidates(project: Project, root: Path, per_project: int) -> list[C
             if fn.startswith("_"):
                 continue
             found.append(Candidate(project.language, project.repo, file_path, fn))
-            if len(found) >= per_project:
+            if per_project > 0 and len(found) >= per_project:
                 return found
 
     return found
@@ -213,9 +223,9 @@ def write_report(path: Path, rows: list[RunResult]) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run Graphene static analysis on sampled open-source projects")
-    parser.add_argument("--per-project", type=int, default=25, help="Max sampled functions per project (default: 25)")
+    parser.add_argument("--per-project", type=int, default=0, help="Max sampled functions per project; use 0 for all discovered targets (default: 0)")
     parser.add_argument("--timeout", type=float, default=5.0, help="Per-target timeout in seconds (default: 5)")
-    parser.add_argument("--log-dir", default="logs_oss_bench", help="Graphene log directory for OSS runs")
+    parser.add_argument("--log-dir", default="logs/oss_bench", help="Graphene log directory for OSS runs")
     parser.add_argument("--report", default="benchmarks/oss_benchmark_report.csv", help="CSV report output path")
     parser.add_argument("--refresh", action="store_true", help="Refresh existing clones with git fetch/reset")
     parser.add_argument("--clone-only", action="store_true", help="Clone/sync repos and exit without analysis")

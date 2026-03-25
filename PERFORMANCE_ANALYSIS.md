@@ -60,7 +60,7 @@ The script generates:
 
 The script prints a summary to the console:
 
-```
+```text
 PERFORMANCE SUMMARY
 ==============================================
 Total Results:           12,450
@@ -78,7 +78,7 @@ Avg Execution Time:      342.5ms
 
 The tool reads from the `logs/` directory structure:
 
-```
+```text
 logs/
   ├── go/
   │   ├── session_YYYYMMDD_HHMMSS.../
@@ -96,12 +96,13 @@ logs/
 
 Each `results.csv` contains per-execution metrics:
 
-```
+```text
 input,success,crashed,escape_detected,escape_summary,error,execution_time_ms
 "",true,false,true,"1 escaping object(s) via 1 path(s)","",0
 ```
 
 Columns:
+
 - `input` - Test input provided to the function
 - `success` - Whether execution completed without errors
 - `crashed` - Whether the function crashed during execution
@@ -113,16 +114,21 @@ Columns:
 ## Metrics Explained
 
 ### Success Rate
+
 Percentage of analyses where the target function executed and completed analysis without fatal errors. A high success rate indicates robust analyzer implementation.
 
 ### Crash Rate
+
 Percentage of analyses where the target function crashed or hung during execution. A low crash rate is critical for production use.
 
 ### Escape Detection Rate
+
 Percentage of analyses where at least one object escape was detected. This varies by test case design—not all functions are designed to have escaping objects.
 
 ### Execution Time
+
 Wall-clock time for each individual analysis run. Includes:
+
 - Startup overhead (interpreter initialization)
 - Function invocation
 - Escape analysis computation
@@ -133,14 +139,17 @@ Longer times in Rust/Go are expected due to compilation overhead on first run.
 ## Interpreting Results
 
 ### High Success Rate + Low Crash Rate = Stability ✓
+
 - Indicates production-ready analyzer
 - Consistent behavior across test cases
 
 ### Variable Escape Detection
+
 - Expected and normal—depends on test case design
 - Compare with known baseline if available
 
 ### Outlier Execution Times
+
 - May indicate:
   - Compilation/startup overhead (first run)
   - Complex escape analysis scenarios
@@ -175,15 +184,18 @@ xdg-open performance_dashboard.html  # Linux
 ## Troubleshooting
 
 ### "No results.csv files found!"
+
 - Run analyses first: `uv run graphene run-all --test-dir tests`
 - Verify logs directory exists: `ls logs/*/*/results.csv`
 
 ### "Required packages not found"
+
 ```bash
 pip install pandas matplotlib seaborn
 ```
 
 ### Charts appear blank
+
 - Ensure execution times are being recorded (check a sample results.csv)
 - Verify sufficient results exist (minimum ~10 per language recommended)
 
@@ -192,7 +204,7 @@ pip install pandas matplotlib seaborn
 Typical performance ranges (may vary by hardware):
 
 | Metric | Range | Target |
-|--------|-------|--------|
+| ------ | ----- | ------ |
 | Success Rate | 98-100% | > 99% |
 | Crash Rate | 0-2% | < 1% |
 | Avg Exec Time | 100-500ms | < 200ms |
@@ -201,6 +213,7 @@ Typical performance ranges (may vary by hardware):
 ## Future Enhancements
 
 Potential additions:
+
 - Time-series trends (success rate over time)
 - Comparison between analysis modes (static vs dynamic vs both)
 - Error categorization and frequency analysis
