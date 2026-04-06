@@ -67,6 +67,9 @@ def load_function_from_target(target: str):
             if spec is None or spec.loader is None:
                 raise ImportError(f"Cannot load spec for {module_part}")
             module = importlib.util.module_from_spec(spec)
+            # Register module before execution so decorators (e.g., dataclass)
+            # can resolve module globals through sys.modules during import.
+            sys.modules[spec.name] = module
             spec.loader.exec_module(module)
         else:
             try:
@@ -307,6 +310,9 @@ def analyze(request: dict) -> dict:
         return _error_response("python", "Missing required field: 'target'", session_id)
     
     inputs = request.get("inputs", [])
+    if not inputs:
+        # Run one dynamic probe with no positional input when the CLI omits --input.
+        inputs = [None]
     repeat = request.get("repeat", 1)
     timeout_seconds = request.get("timeout_seconds", 30.0)
     analysis_mode = request.get("analysis_mode", "dynamic")

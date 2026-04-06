@@ -33,7 +33,7 @@ PROJECTS = [
     Project("python", "aio-libs/aiohttp"),
     Project("javascript", "axios/axios"),
     Project("javascript", "expressjs/express"),
-    Project("javascript", "socketio/socket.io"),
+    Project("javascript", "lodash/lodash"),  # Smaller than socket.io (~800 targets)
     Project("javascript", "fastify/fastify"),
     Project("go", "gin-gonic/gin"),
     Project("go", "spf13/cobra"),
@@ -41,11 +41,11 @@ PROJECTS = [
     Project("go", "gorilla/websocket"),
     Project("rust", "serde-rs/serde"),
     Project("rust", "tokio-rs/bytes"),
-    Project("rust", "tokio-rs/tokio"),
+    Project("rust", "rustwasm/wasm-bindgen"),  # Smaller than tokio (~1200 targets)
     Project("rust", "hyperium/hyper"),
     Project("java", "google/gson"),
     Project("java", "apache/commons-lang"),
-    Project("java", "apache/commons-collections"),
+    Project("java", "junit-team/junit5"),  # Smaller than commons-collections
     Project("java", "vavr-io/vavr"),
 ]
 
@@ -168,8 +168,12 @@ def candidate_target(candidate: Candidate) -> str:
     return f"{rel}:{candidate.function}"
 
 
-def analyze_candidate(candidate: Candidate, log_dir: str, timeout: float) -> RunResult:
+def analyze_candidate(candidate: Candidate, log_dir: str, timeout: float, idx: int = 0, total: int = 0) -> RunResult:
     target = candidate_target(candidate)
+    # Provide progress feedback before analysis starts
+    progress_str = f" [{idx}/{total}]" if total > 0 else ""
+    print(f"  [analyze]{progress_str} {candidate.repo}::{candidate.function}", end="", flush=True)
+    
     cmd = [
         sys.executable,
         str(ROOT / "graphene_ha" / "cli.py"),
@@ -188,6 +192,10 @@ def analyze_candidate(candidate: Candidate, log_dir: str, timeout: float) -> Run
     note = ""
     if rc != 0:
         note = (err or out).strip().replace("\n", " ")[:300]
+    
+    # Print completion with timing
+    status = "[OK]" if rc == 0 else "[FAIL]"
+    print(f" {status} {elapsed:.1f}ms")
     return RunResult(candidate.language, candidate.repo, target, rc == 0, elapsed, rc, note)
 
 
@@ -223,7 +231,7 @@ def write_report(path: Path, rows: list[RunResult]) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run Graphene static analysis on sampled open-source projects")
-    parser.add_argument("--per-project", type=int, default=0, help="Max sampled functions per project; use 0 for all discovered targets (default: 0)")
+    parser.add_argument("--per-project", type=int, default=10, help="Max sampled functions per project (default: 10; use 2 for quick test; 0 for all)")
     parser.add_argument("--timeout", type=float, default=5.0, help="Per-target timeout in seconds (default: 5)")
     parser.add_argument("--log-dir", default="logs/oss_bench", help="Graphene log directory for OSS runs")
     parser.add_argument("--report", default="benchmarks/oss_benchmark_report.csv", help="CSV report output path")
@@ -237,12 +245,19 @@ def main() -> int:
 
     rows: list[RunResult] = []
     total_candidates = 0
+    all_candidates: list[tuple[Candidate, str]] = []  # Store for progress tracking
+    import time as time_module
+    start_time = time_module.time()
 
+    # Phase 1: Clone and collect all candidates
+    print("\n=== Phase 1: Cloning and discovering targets ===")
     for project in PROJECTS:
-        print(f"[clone] {project.language} {project.repo}")
+        print(f"[clone] {project.language} {project.repo}", end="", flush=True)
         try:
             repo_path = clone_project(project, refresh=args.refresh)
+            print(" [OK]")
         except Exception as exc:
+            print(f" [FAIL] {str(exc)[:80]}")
             rows.append(RunResult(project.language, project.repo, "<clone>", False, 0.0, 1, str(exc)[:300]))
             continue
 
@@ -252,9 +267,20 @@ def main() -> int:
         candidates = collect_candidates(project, repo_path, args.per_project)
         total_candidates += len(candidates)
         print(f"[sample] {project.repo}: {len(candidates)} targets")
-
         for cand in candidates:
-            rows.append(analyze_candidate(cand, log_dir=args.log_dir, timeout=args.timeout))
+            all_candidates.append((cand, project.repo))
+
+    # Phase 2: Analyze all candidates with progress
+    print(f"\n=== Phase 2: Analyzing {len(all_candidates)} targets ===")
+    for idx, (cand, _) in enumerate(all_candidates, 1):
+        elapsed_so_far = time_module.time() - start_time
+        avg_per_target = elapsed_so_far / idx if idx > 0 else 0
+        remaining = len(all_candidates) - idx
+        eta_seconds = int(avg_per_target * remaining)
+        eta_str = f"ETA {eta_seconds}s" if remaining > 0 else ""
+        
+        print(f"{eta_str:12} ", end="", flush=True)
+        rows.append(analyze_candidate(cand, log_dir=args.log_dir, timeout=args.timeout, idx=idx, total=len(all_candidates)))
 
     if args.clone_only:
         print("Done cloning repositories.")

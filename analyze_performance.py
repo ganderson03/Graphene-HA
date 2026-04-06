@@ -195,8 +195,12 @@ class PerformanceAnalyzer:
                 raw = f"{tool}-{lang}" if tool in cross_language_profiles and lang else tool
             elif parts[0] == "oss" and len(parts) >= 2:
                 raw = f"oss-{parts[1]}"
+            elif parts[0] == "graphene_static" and len(parts) >= 2:
+                raw = f"graphene-static-{parts[1]}"
+            elif parts[0] == "graphene_dynamic" and len(parts) >= 2:
+                raw = f"graphene-dynamic-{parts[1]}"
             elif parts[0] == "graphene" and len(parts) >= 2:
-                raw = f"graphene-{parts[1]}"
+                raw = f"graphene-both-{parts[1]}"
             else:
                 raw = parts[-1]
 

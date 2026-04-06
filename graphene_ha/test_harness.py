@@ -6,8 +6,21 @@ import multiprocessing
 import asyncio
 import sys
 import threading
+import io
+from contextlib import redirect_stdout, redirect_stderr
 from dataclasses import dataclass
 from pathlib import Path
+
+
+def _invoke_target(func, input_data, fixed_kwargs):
+    """Invoke target function, supporting both zero-arg and single-arg targets."""
+    if input_data is None:
+        try:
+            return func(**fixed_kwargs)
+        except TypeError:
+            # Fallback to legacy single-input call shape when target expects one arg.
+            return func(input_data, **fixed_kwargs)
+    return func(input_data, **fixed_kwargs)
 
 @dataclass
 class TestResult:
@@ -77,8 +90,11 @@ class PythonFunctionTestHarness:
 
         def worker(func, input_data, fixed_kwargs, result_queue):
             try:
-                returned_value = func(input_data, **fixed_kwargs)
-                output = str(returned_value)
+                buffer = io.StringIO()
+                with redirect_stdout(buffer), redirect_stderr(buffer):
+                    returned_value = _invoke_target(func, input_data, fixed_kwargs)
+                captured = buffer.getvalue()
+                output = captured if captured else str(returned_value)
                 error = ""
                 crashed = False
                 returned_type = type(returned_value).__name__
@@ -167,8 +183,11 @@ class PythonFunctionTestHarness:
 
         def run_with_timeout():
             try:
-                returned_value = self.func(input_data, **self.fixed_kwargs)
-                result["output"] = str(returned_value)
+                buffer = io.StringIO()
+                with redirect_stdout(buffer), redirect_stderr(buffer):
+                    returned_value = _invoke_target(self.func, input_data, self.fixed_kwargs)
+                captured = buffer.getvalue()
+                result["output"] = captured if captured else str(returned_value)
                 result["returned_type"] = self._analyze_return_type(returned_value)
                 result["completed"] = True
             except Exception as e:
@@ -240,8 +259,11 @@ class PythonFunctionTestHarness:
         """Run function in main thread."""
         start = time.time()
         try:
-            returned_value = self.func(input_data, **self.fixed_kwargs)
-            output = str(returned_value)
+            buffer = io.StringIO()
+            with redirect_stdout(buffer), redirect_stderr(buffer):
+                returned_value = _invoke_target(self.func, input_data, self.fixed_kwargs)
+            captured = buffer.getvalue()
+            output = captured if captured else str(returned_value)
             error = ""
             crashed = False
             returned_type = self._analyze_return_type(returned_value)

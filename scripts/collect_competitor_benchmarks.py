@@ -10,11 +10,9 @@ from __future__ import annotations
 
 import argparse
 import csv
-import os
 import re
 import shutil
 import subprocess
-import sys
 import time
 import uuid
 from dataclasses import dataclass
@@ -23,7 +21,6 @@ from pathlib import Path
 from typing import Iterable
 
 ROOT = Path(__file__).resolve().parent.parent
-TOOLS_ROOT = ROOT.parent / "accuracy-benchmark-tools"
 
 
 @dataclass
@@ -53,10 +50,6 @@ def run_command(cmd: list[str], cwd: Path | None = None) -> tuple[int, str, str,
 def session_name() -> str:
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     return f"session_{ts}_{uuid.uuid4().hex[:8]}"
-
-
-def expected_escape(path: Path) -> bool:
-    return "SAFE:" not in path.read_text(encoding="utf-8", errors="replace")
 
 
 def write_session(log_root: Path, language_key: str, result: CaseResult) -> None:
@@ -198,34 +191,22 @@ def run_go_native_escape(go_cases: list[Path]) -> dict[Path, CaseResult]:
         return results
 
     go_cwd = ROOT / "tests" / "go"
-    cmd = [go, "build", "-gcflags=all=-m", "./cases"]
-    rc, out, err, elapsed = run_command(cmd, cwd=go_cwd)
-    stream = "\n".join([out, err])
-    flagged: set[Path] = set()
-    for line in stream.splitlines():
-        if "escapes to heap" not in line:
-            continue
-        m = re.search(r"([A-Za-z]:\\[^:]+\.go|cases/[\w_]+\.go):\d+", line)
-        if m:
-            raw = m.group(1)
-            if raw.startswith("cases/"):
-                flagged.add((go_cwd / raw).resolve())
-            else:
-                flagged.add(Path(raw).resolve())
-
-    per_case_ms = elapsed / max(1, len(go_cases))
-    shared_error = (err or out).strip()[:600]
-    failed = rc != 0 and not flagged
 
     for p in go_cases:
-        target = str(p.relative_to(ROOT)).replace("\\", "/")
+        rel_file = Path("cases") / p.name
+        cmd = [go, "build", "-gcflags=all=-m", f"./{rel_file.as_posix()}"]
+        rc, out, err, elapsed = run_command(cmd, cwd=go_cwd)
+        stream = "\n".join([out, err])
+        escaped = "escapes to heap" in stream
+        shared_error = (err or out).strip()[:600]
+
         results[p] = CaseResult(
-            target=target,
-            success=not failed,
-            crashed=failed,
-            escape_detected=p.resolve() in flagged,
-            execution_time_ms=per_case_ms,
-            error=shared_error if failed else "",
+            target=str(p.relative_to(ROOT)).replace("\\", "/"),
+            success=rc == 0,
+            crashed=rc != 0,
+            escape_detected=escaped,
+            execution_time_ms=elapsed,
+            error=shared_error if rc != 0 else "",
         )
 
     return results
@@ -408,10 +389,17 @@ def persist_results(log_root: Path, language_key: str, rows: Iterable[CaseResult
 def main() -> int:
     parser = argparse.ArgumentParser(description="Collect competitor benchmark logs")
     parser.add_argument("--log-dir", default="logs/competitors", help="Output log root (default: logs/competitors)")
-    parser.add_argument("--limit", type=int, default=0, help="Cases per language; use 0 for all (default: 0)")
+    parser.add_argument("--limit", type=int, default=10, help="Cases per language; use 0 for all (default: 10)")
+    parser.add_argument(
+        "--clean",
+        action="store_true",
+        help="Remove existing log directory before collecting new results",
+    )
     args = parser.parse_args()
 
     log_root = ROOT / args.log_dir
+    if args.clean and log_root.exists():
+        shutil.rmtree(log_root)
     log_root.mkdir(parents=True, exist_ok=True)
 
     py_cases = collect_python_cases(args.limit)

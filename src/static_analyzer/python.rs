@@ -50,14 +50,57 @@ impl StaticEscapeAnalyzer for PythonStaticAnalyzer {
     }
     
     fn is_available(&self) -> bool {
-        Command::new("python3")
-            .arg("--version")
-            .output()
-            .is_ok()
+        Self::find_python_executable().is_some()
     }
 }
 
 impl PythonStaticAnalyzer {
+    fn find_python_executable() -> Option<String> {
+        // Try to find python3 in PATH, avoiding Windows Microsoft Store alias
+        #[cfg(target_os = "windows")]
+        {
+            // On Windows, try python.exe, python3.exe variants in common paths
+            let candidates = vec![
+                "python3.exe",
+                "python3.14.exe",
+                "python.exe",
+            ];
+            for candidate in candidates {
+                if let Ok(output) = std::process::Command::new("where")
+                    .arg(candidate)
+                    .output()
+                {
+                    if output.status.success() {
+                        let path = String::from_utf8_lossy(&output.stdout)
+                            .lines()
+                            .next()
+                            .unwrap_or("")
+                            .trim()
+                            .to_string();
+                        if !path.is_empty() && !path.contains("WindowsApps") && std::path::Path::new(&path).exists() {
+                            return Some(path);
+                        }
+                    }
+                }
+            }
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            if let Ok(output) = std::process::Command::new("which")
+                .arg("python3")
+                .output()
+            {
+                if output.status.success() {
+                    let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                    if std::path::Path::new(&path).exists() {
+                        return Some(path);
+                    }
+                }
+            }
+        }
+        None
+    }
+
     fn analyze_python_ast(&self, source_file: &str, function_name: &str) -> Result<Vec<StaticEscape>> {
         // Path to the static analyzer script
         let script_path = crate::analyzer::workspace_root()?
@@ -67,8 +110,12 @@ impl PythonStaticAnalyzer {
             anyhow::bail!("Static analyzer script not found at: {:?}", script_path);
         }
         
+        // Find python executable
+        let python_exe = Self::find_python_executable()
+            .ok_or_else(|| anyhow::anyhow!("Python executable not found in PATH"))?;
+        
         // Run analyzer
-        let output = Command::new("python3")
+        let output = Command::new(&python_exe)
             .arg(script_path)
             .arg(source_file)
             .arg(function_name)

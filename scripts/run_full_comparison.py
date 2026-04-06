@@ -7,6 +7,7 @@ This wraps the existing workflow scripts into one command.
 from __future__ import annotations
 
 import argparse
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -25,19 +26,54 @@ def main() -> int:
     parser = argparse.ArgumentParser(
         description="Run Graphene + native and heuristic escape detectors and generate comparison HTML dashboard"
     )
-    parser.add_argument("--generate", type=int, default=1, help="Graphene input count per test (default: 1)")
-    parser.add_argument("--competitor-limit", type=int, default=0, help="Competitor cases per language; use 0 for all (default: 0)")
-    parser.add_argument("--oss-per-project", type=int, default=0, help="OSS sampled functions per project; use 0 for all discovered targets (default: 0)")
-    parser.add_argument("--oss-timeout", type=float, default=7.0, help="OSS per-target timeout seconds (default: 7.0)")
-    parser.add_argument("--graphene-logs", default="logs/graphene", help="Graphene log directory (default: logs/graphene)")
+    parser.add_argument("--generate", type=int, default=10, help="Graphene input count per test (default: 10; use 1 for quick test)")
+    parser.add_argument("--competitor-limit", type=int, default=10, help="Competitor cases per language (default: 10; use 5 for quick test; 0 for all)")
+    parser.add_argument("--oss-per-project", type=int, default=10, help="OSS sampled functions per project (default: 10; use 2 for quick test; 0 for all)")
+    parser.add_argument("--oss-timeout", type=float, default=5.0, help="OSS per-target timeout seconds (default: 5.0)")
+    parser.add_argument(
+        "--oss-report",
+        default="benchmarks/oss_benchmark_report.csv",
+        help="OSS benchmark CSV report path (default: benchmarks/oss_benchmark_report.csv)",
+    )
+    parser.add_argument("--graphene-logs", default="logs/graphene", help="Graphene BOTH-mode log directory (default: logs/graphene)")
+    parser.add_argument("--graphene-static-logs", default="logs/graphene_static", help="Graphene STATIC-mode log directory (default: logs/graphene_static)")
+    parser.add_argument("--graphene-dynamic-logs", default="logs/graphene_dynamic", help="Graphene DYNAMIC-mode log directory (default: logs/graphene_dynamic)")
     parser.add_argument("--competitor-logs", default="logs/competitors_escape", help="Competitor log directory (default: logs/competitors_escape)")
     parser.add_argument("--oss-logs", default="logs/oss_bench", help="OSS Graphene log directory (default: logs/oss_bench)")
     parser.add_argument("--combined-logs", default="logs/comparison", help="Combined log directory (default: logs/comparison)")
     parser.add_argument("--output-dir", default="comparison_dashboard", help="Dashboard output directory (default: comparison_dashboard)")
     parser.add_argument("--skip-oss", action="store_true", help="Skip OSS benchmark sampling step")
+    parser.add_argument(
+        "--clean",
+        action="store_true",
+        help="Remove existing logs/report before running the full pipeline",
+    )
     args = parser.parse_args()
 
     py = sys.executable
+
+    graphene_logs_path = ROOT / args.graphene_logs
+    graphene_static_logs_path = ROOT / args.graphene_static_logs
+    graphene_dynamic_logs_path = ROOT / args.graphene_dynamic_logs
+    competitor_logs_path = ROOT / args.competitor_logs
+    oss_logs_path = ROOT / args.oss_logs
+    combined_logs_path = ROOT / args.combined_logs
+    output_dir_path = ROOT / args.output_dir
+    oss_report_path = ROOT / args.oss_report
+
+    if args.clean:
+        for path in [
+            graphene_logs_path,
+            graphene_static_logs_path,
+            graphene_dynamic_logs_path,
+            competitor_logs_path,
+            oss_logs_path,
+            combined_logs_path,
+        ]:
+            if path.exists():
+                shutil.rmtree(path)
+        if oss_report_path.exists():
+            oss_report_path.unlink()
 
     graphene_cmd = [
         py,
@@ -47,6 +83,32 @@ def main() -> int:
         str(args.generate),
         "--log-dir",
         args.graphene_logs,
+        "--analysis-mode",
+        "both",
+    ]
+
+    graphene_static_cmd = [
+        py,
+        str(ROOT / "graphene_ha" / "cli.py"),
+        "run-all",
+        "--generate",
+        str(args.generate),
+        "--log-dir",
+        args.graphene_static_logs,
+        "--analysis-mode",
+        "static",
+    ]
+
+    graphene_dynamic_cmd = [
+        py,
+        str(ROOT / "graphene_ha" / "cli.py"),
+        "run-all",
+        "--generate",
+        str(args.generate),
+        "--log-dir",
+        args.graphene_dynamic_logs,
+        "--analysis-mode",
+        "dynamic",
     ]
 
     competitors_cmd = [
@@ -57,6 +119,8 @@ def main() -> int:
         "--limit",
         str(args.competitor_limit),
     ]
+    if args.clean:
+        competitors_cmd.append("--clean")
 
     oss_cmd = [
         py,
@@ -67,6 +131,8 @@ def main() -> int:
         str(args.oss_timeout),
         "--log-dir",
         args.oss_logs,
+        "--report",
+        args.oss_report,
     ]
 
     dashboard_cmd = [
@@ -74,6 +140,10 @@ def main() -> int:
         str(ROOT / "scripts" / "build_comparison_dashboard.py"),
         "--graphene-logs",
         args.graphene_logs,
+        "--graphene-static-logs",
+        args.graphene_static_logs,
+        "--graphene-dynamic-logs",
+        args.graphene_dynamic_logs,
         "--competitor-logs",
         args.competitor_logs,
         "--oss-logs",
@@ -85,6 +155,14 @@ def main() -> int:
     ]
 
     rc = run_step(graphene_cmd, "Graphene Baseline")
+    if rc != 0:
+        return rc
+
+    rc = run_step(graphene_static_cmd, "Graphene Static-Only Baseline")
+    if rc != 0:
+        return rc
+
+    rc = run_step(graphene_dynamic_cmd, "Graphene Dynamic-Only Baseline")
     if rc != 0:
         return rc
 
@@ -102,7 +180,17 @@ def main() -> int:
         return rc
 
     print("\nDone.")
-    print(f"Open: {ROOT / args.output_dir / 'performance_dashboard.html'}")
+    print("Saved artifacts:")
+    print(f"- Artificial test logs (Graphene, both): {graphene_logs_path}")
+    print(f"- Artificial test logs (Graphene, static): {graphene_static_logs_path}")
+    print(f"- Artificial test logs (Graphene, dynamic): {graphene_dynamic_logs_path}")
+    print(f"- Artificial test logs (Competitors): {competitor_logs_path}")
+    if not args.skip_oss:
+        print(f"- Open-source benchmark logs: {oss_logs_path}")
+        print(f"- Open-source benchmark CSV: {oss_report_path}")
+    print(f"- Combined logs feeding graphs: {combined_logs_path}")
+    print(f"- Graph output directory: {output_dir_path}")
+    print(f"Open: {output_dir_path / 'performance_dashboard.html'}")
     return 0
 
 

@@ -262,15 +262,17 @@ async fn run_dynamic_analysis(
 }
 
 fn detect_language_from_target(target: &str) -> Result<String> {
-    if target.ends_with(".py") || target.contains("python") {
+    let target_head = target.split(':').next().unwrap_or(target);
+
+    if target_head.ends_with(".py") || target.contains("python") {
         Ok("python".to_string())
-    } else if target.ends_with(".java") {
+    } else if target_head.ends_with(".java") {
         Ok("java".to_string())
-    } else if target.ends_with(".js") || target.ends_with(".mjs") {
+    } else if target_head.ends_with(".js") || target_head.ends_with(".mjs") {
         Ok("javascript".to_string())
-    } else if target.ends_with(".go") {
+    } else if target_head.ends_with(".go") {
         Ok("go".to_string())
-    } else if target.ends_with(".rs") {
+    } else if target_head.ends_with(".rs") {
         Ok("rust".to_string())
     } else {
         anyhow::bail!("Unable to detect language from target: {}", target)
