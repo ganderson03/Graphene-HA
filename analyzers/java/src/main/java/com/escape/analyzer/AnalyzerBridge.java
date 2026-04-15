@@ -5,6 +5,8 @@ import com.google.gson.GsonBuilder;
 import com.google.gson.annotations.SerializedName;
 import java.io.*;
 import java.lang.management.ManagementFactory;
+import java.lang.management.MemoryMXBean;
+import java.lang.management.MemoryUsage;
 import java.lang.management.ThreadInfo;
 import java.lang.management.ThreadMXBean;
 import java.lang.reflect.Method;
@@ -236,6 +238,8 @@ public class AnalyzerBridge {
 
         // Load target method
         LoadedTarget target = loadTargetMethod(request.target);
+
+        // Run static analysis
         StaticEscapeAnalysis staticAnalysis = runTraditionalStaticEscapeAnalysis(target.sourceFile, target.methodName);
 
         // Run tests
@@ -248,12 +252,12 @@ public class AnalyzerBridge {
 
         for (String input : inputs) {
             for (int i = 0; i < request.repeat; i++) {
-                ExecutionResult result = executeTest(target.method, input, request.timeoutSeconds);
-
-                if (staticAnalysis.detected()) {
-                    result.escapeDetected = true;
-                    result.escapeDetails = mergeEscapeDetails(result.escapeDetails, staticAnalysis.details);
-                }
+                ExecutionResult result = executeTest(
+                    target.method,
+                    request.target,
+                    input,
+                    request.timeoutSeconds
+                );
 
                 response.results.add(result);
 
@@ -269,25 +273,44 @@ public class AnalyzerBridge {
                     // Add vulnerability
                     Vulnerability vuln = new Vulnerability();
                     vuln.input = input;
-                    vuln.vulnerabilityType = "concurrent_escape";
+                    vuln.vulnerabilityType = "object_escape";
                     vuln.severity = "high";
-                    int staticCount = result.escapeDetails.escapingReferences.size();
-                    int threadCount = result.escapeDetails.threads.size();
                     String description = result.escapeDetails.summary();
-                    if (staticCount > 0) {
-                        description = staticCount + " static object escape(s) detected";
-                        if (staticAnalysis.summary != null && !staticAnalysis.summary.isEmpty()) {
-                            description = description + " (" + staticAnalysis.summary + ")";
-                        }
-                        if (threadCount > 0) {
-                            description = description + " + " + threadCount + " thread leak(s)";
-                        }
+                    String heapGrowth = findHeapSignal(result.escapeDetails.other, "heap_growth_bytes:");
+                    if (heapGrowth != null) {
+                        description = "Java heap escape signal detected (" + heapGrowth + ")";
                     }
                     vuln.description = description;
                     vuln.escapeDetails = result.escapeDetails;
                     response.vulnerabilities.add(vuln);
                 }
             }
+        }
+
+        // Add static findings as a base result if static analysis detected escapes
+        if (staticAnalysis.detected()) {
+            ExecutionResult staticResult = new ExecutionResult();
+            staticResult.inputData = "[static analysis]";
+            staticResult.success = true;
+            staticResult.crashed = false;
+            staticResult.escapeDetected = true;
+            staticResult.error = "";
+            staticResult.executionTimeMs = 0L;
+            staticResult.escapeDetails = staticAnalysis.details;
+            response.results.add(staticResult);
+            
+            successes++;
+            escapes++;
+            genuineEscapes++;
+            
+            // Add vulnerability for static finding
+            Vulnerability vuln = new Vulnerability();
+            vuln.input = "[static analysis]";
+            vuln.vulnerabilityType = "object_escape";
+            vuln.severity = "medium";
+            vuln.description = staticAnalysis.summary;
+            vuln.escapeDetails = staticAnalysis.details;
+            response.vulnerabilities.add(vuln);
         }
 
         // Summary
@@ -303,6 +326,18 @@ public class AnalyzerBridge {
         response.summary = summary;
 
         return response;
+    }
+
+    private static String findHeapSignal(List<String> entries, String prefix) {
+        if (entries == null || entries.isEmpty()) {
+            return null;
+        }
+        for (String entry : entries) {
+            if (entry != null && entry.startsWith(prefix)) {
+                return entry;
+            }
+        }
+        return null;
     }
 
     private static LoadedTarget loadTargetMethod(String target) throws Exception {
@@ -375,7 +410,7 @@ public class AnalyzerBridge {
         throw new NoSuchMethodException(methodName + " in " + clazz.getName());
     }
 
-    private static ExecutionResult executeTest(Method method, String input, double timeoutSeconds) {
+    private static ExecutionResult executeTest(Method method, String targetLabel, String input, double timeoutSeconds) {
         ExecutionResult result = new ExecutionResult();
         result.inputData = input;
         result.success = false;
@@ -385,6 +420,7 @@ public class AnalyzerBridge {
         // Capture baseline thread state
         ThreadMXBean threadMXBean = ManagementFactory.getThreadMXBean();
         Map<Long, ThreadInfo> baselineThreads = getAllThreadInfo(threadMXBean);
+        HeapSnapshot baselineHeap = captureHeapSnapshot();
 
         long startTime = System.currentTimeMillis();
 
@@ -469,10 +505,54 @@ public class AnalyzerBridge {
             }
         }
 
-        result.escapeDetected = !escapeDetails.threads.isEmpty();
+        HeapSnapshot currentHeap = captureHeapSnapshot();
+        long heapGrowthBytes = Math.max(0L, currentHeap.usedBytes - baselineHeap.usedBytes);
+        long heapPeakBytes = Math.max(currentHeap.committedBytes, baselineHeap.committedBytes);
+        if (heapGrowthBytes > 0L) {
+            ObjectReference reference = new ObjectReference();
+            reference.variableName = targetLabel;
+            reference.objectType = "heap_allocation_delta";
+            reference.allocationSite = targetLabel;
+            reference.escapedVia = "heap";
+            escapeDetails.escapingReferences.add(reference);
+
+            EscapePath path = new EscapePath();
+            path.source = targetLabel;
+            path.destination = "heap_container";
+            path.escapeType = "heap";
+            path.confidence = heapGrowthBytes >= 1024L ? "high" : "medium";
+            escapeDetails.escapePaths.add(path);
+
+            escapeDetails.other.add("heap_growth_bytes:" + heapGrowthBytes);
+            escapeDetails.other.add("heap_used_before_bytes:" + baselineHeap.usedBytes);
+            escapeDetails.other.add("heap_used_after_bytes:" + currentHeap.usedBytes);
+            escapeDetails.other.add("heap_peak_bytes:" + heapPeakBytes);
+        }
+
+        result.escapeDetected = !escapeDetails.threads.isEmpty() || !escapeDetails.escapingReferences.isEmpty();
         result.escapeDetails = escapeDetails;
 
         return result;
+    }
+
+    static class HeapSnapshot {
+        long usedBytes;
+        long committedBytes;
+    }
+
+    private static HeapSnapshot captureHeapSnapshot() {
+        System.gc();
+        try {
+            Thread.sleep(20);
+        } catch (InterruptedException ignored) {
+        }
+
+        MemoryMXBean memoryBean = ManagementFactory.getMemoryMXBean();
+        MemoryUsage usage = memoryBean.getHeapMemoryUsage();
+        HeapSnapshot snapshot = new HeapSnapshot();
+        snapshot.usedBytes = Math.max(0L, usage.getUsed());
+        snapshot.committedBytes = Math.max(0L, usage.getCommitted());
+        return snapshot;
     }
 
     private static boolean isSystemThread(ThreadInfo info, Set<String> systemPrefixes) {

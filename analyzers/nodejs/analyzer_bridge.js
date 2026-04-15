@@ -348,12 +348,14 @@ function mergeEscapeDetails(primary, secondary) {
     return merged;
 }
 
-async function executeTest(targetFunc, input, timeoutSeconds) {
+async function executeTest(targetFunc, targetLabel, input, timeoutSeconds) {
     const result = {input_data: input, success: false, crashed: false, output: '', error: '', execution_time_ms: 0, escape_detected: false, escape_details: emptyEscapeDetails()};
     const tracker = new AsyncResourceTracker();
     tracker.start();
     await new Promise((resolve) => setImmediate(resolve));
     tracker.captureBaseline();
+
+    const heapBefore = captureHeapSnapshot();
 
     const startTime = Date.now();
     let timeoutHandle = null;
@@ -378,11 +380,61 @@ async function executeTest(targetFunc, input, timeoutSeconds) {
 
     result.execution_time_ms = Date.now() - startTime;
     await new Promise(resolve => setTimeout(resolve, 100));
+
+    const heapAfter = captureHeapSnapshot();
+    const heapGrowthBytes = Math.max(0, heapAfter.heap_used_bytes - heapBefore.heap_used_bytes);
+    const heapPeakBytes = Math.max(heapAfter.heap_total_bytes, heapBefore.heap_total_bytes);
+
+    if (heapGrowthBytes > 0) {
+        const label = String(targetLabel || '<anonymous>');
+        result.escape_details.escaping_references.push({
+            variable_name: label,
+            object_type: 'heap_allocation_delta',
+            allocation_site: label,
+            escaped_via: 'heap'
+        });
+
+        result.escape_details.escape_paths.push({
+            source: label,
+            destination: 'heap_container',
+            escape_type: 'heap',
+            confidence: heapGrowthBytes >= 1024 ? 'high' : 'medium'
+        });
+
+        result.escape_details.other.push(`heap_growth_bytes:${heapGrowthBytes}`);
+        result.escape_details.other.push(`heap_used_before_bytes:${heapBefore.heap_used_bytes}`);
+        result.escape_details.other.push(`heap_used_after_bytes:${heapAfter.heap_used_bytes}`);
+        result.escape_details.other.push(`heap_peak_bytes:${heapPeakBytes}`);
+    }
+
     const escapedResources = tracker.getEscapedResources();
     result.escape_details.async_tasks = escapedResources;
-    result.escape_detected = escapedResources.length > 0;
+    result.escape_detected = escapedResources.length > 0 || result.escape_details.escaping_references.length > 0;
     tracker.stop();
     return result;
+}
+
+function captureHeapSnapshot() {
+    if (typeof global.gc === 'function') {
+        try {
+            global.gc();
+        } catch (_) {
+            // Best-effort GC; continue with current memory view.
+        }
+    }
+
+    const usage = process.memoryUsage();
+    return {
+        heap_used_bytes: Math.max(0, usage.heapUsed || 0),
+        heap_total_bytes: Math.max(0, usage.heapTotal || 0)
+    };
+}
+
+function findHeapSignal(entries, prefix) {
+    if (!Array.isArray(entries)) {
+        return null;
+    }
+    return entries.find((entry) => typeof entry === 'string' && entry.startsWith(prefix)) || null;
 }
 
 function errorResponse(error, sessionId = 'unknown') {
@@ -422,18 +474,12 @@ async function analyze(request) {
         if (!Array.isArray(request.inputs)) throw new Error("Missing or invalid field: 'inputs' must be an array");
         
         const loadedTarget = loadTargetFunction(request.target);
-        const staticAnalysis = runTraditionalStaticEscapeAnalysis(loadedTarget.sourcePath, loadedTarget.functionName);
         let successes = 0, crashes = 0, timeouts = 0, escapes = 0, genuineEscapes = 0;
         
         for (const input of request.inputs) {
             for (let i = 0; i < (request.repeat || 1); i++) {
                 const timeoutSeconds = request.timeout_seconds || request.timeoutSeconds || 30;
-                const result = await executeTest(loadedTarget.targetFunc, input, timeoutSeconds);
-
-                if (staticAnalysis.detected) {
-                    result.escape_detected = true;
-                    result.escape_details = mergeEscapeDetails(result.escape_details, staticAnalysis.details);
-                }
+                const result = await executeTest(loadedTarget.targetFunc, request.target, input, timeoutSeconds);
 
                 response.results.push(result);
                 if (result.success) successes++;
@@ -443,16 +489,15 @@ async function analyze(request) {
                     escapes++;
                     if (!result.error.includes('timeout')) genuineEscapes++;
 
-                    const staticCount = result.escape_details.escaping_references.length;
                     const asyncCount = result.escape_details.async_tasks.length;
-                    const staticSummary = staticAnalysis.summary;
-                    const description = staticCount > 0
-                        ? `${staticCount} static object escape(s) detected${staticSummary ? ` (${staticSummary})` : ''}${asyncCount > 0 ? ` + ${asyncCount} async resource leak(s)` : ''}`
+                    const heapSignal = findHeapSignal(result.escape_details.other, 'heap_growth_bytes:');
+                    const description = heapSignal
+                        ? `Node.js heap escape signal detected (${heapSignal})${asyncCount > 0 ? ` + ${asyncCount} async resource leak(s)` : ''}`
                         : `${asyncCount} async resource(s) escaped`;
 
                     response.vulnerabilities.push({
                         input,
-                        vulnerability_type: 'concurrent_escape',
+                        vulnerability_type: 'object_escape',
                         severity: 'high',
                         description,
                         escape_details: result.escape_details

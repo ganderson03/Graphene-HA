@@ -1,12 +1,18 @@
-# Go Bridge
-
-Bridge for Go object/data escape analysis.
+﻿# Go Bridge
 
 ## Files
 
 - main.go
 - static_analyzer.go
 - go.mod
+
+## Functionality
+
+- parses Go target references
+- builds temporary target runners for dynamic execution
+- executes probes under timeout constraints
+- records heap and goroutine-related escape signals
+- emits normalized protocol results
 
 ## Build
 
@@ -16,6 +22,6 @@ go build -o escape-analyzer main.go
 go build -o static-escape-analyzer static_analyzer.go
 ```
 
-## Example target style
+## Target Format
 
-- tests/go/cases/case_001_cache_profile.go:Case001CacheProfile
+- tests/go/cases/file.go:ExportedFunction

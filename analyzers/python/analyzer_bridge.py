@@ -1,16 +1,17 @@
 #!/usr/bin/env python3
 """Python analyzer bridge for object escape analysis.
 
-Dynamic execution verifies runtime behavior (timeouts/crashes), while escape
-findings are sourced from static object escape analysis so results focus on
-traditional escapes (return, parameter, global, closure, heap).
+Dynamic execution now uses direct heap/object tracing to measure memory growth
+around each target invocation while preserving the bridge's existing result
+packaging and report contract.
 """
 
+import gc
 import json
 import sys
 import inspect
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 # Add parent directories to path
 BRIDGE_DIR = Path(__file__).resolve().parent
@@ -30,17 +31,12 @@ from vulnerability_detector import VulnerabilityDetector  # type: ignore[import-
 import importlib
 import importlib.util
 import time
+import tracemalloc
 
 
-TRADITIONAL_ESCAPE_TYPES = {"return", "parameter", "global", "closure", "heap"}
 ESCAPE_DESTINATIONS = {
-    "return": "caller",
-    "parameter": "callee",
-    "global": "module_scope",
-    "closure": "closure_scope",
     "heap": "heap_container",
 }
-STATIC_ANALYZER_MODULE = None
 
 
 def parse_target(target: str) -> Tuple[str, str]:
@@ -97,104 +93,109 @@ def resolve_source_file(target: str, func: Any) -> str:
     return ""
 
 
-def _load_static_analyzer_module():
-    """Lazily load the Python static analyzer module."""
-    global STATIC_ANALYZER_MODULE
-    if STATIC_ANALYZER_MODULE is not None:
-        return STATIC_ANALYZER_MODULE
-
-    analyzer_path = ROOT_DIR / "analyzers" / "python" / "static_analyzer.py"
-    if not analyzer_path.exists():
-        return None
-
-    spec = importlib.util.spec_from_file_location("graphene_static_analyzer", analyzer_path)
-    if spec is None or spec.loader is None:
-        return None
-
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    STATIC_ANALYZER_MODULE = module
-    return module
-
-
-def run_traditional_static_escape_analysis(source_file: str, function_name: str) -> List[Dict[str, Any]]:
-    """Return only traditional object escapes from static analyzer output."""
-    if not source_file or not Path(source_file).exists() or not function_name:
-        return []
-
-    analyzer_module = _load_static_analyzer_module()
-    if analyzer_module is None or not hasattr(analyzer_module, "analyze_file"):
-        return []
-
+def _normalize_path(path_value: str) -> Optional[Path]:
     try:
-        result = analyzer_module.analyze_file(source_file, function_name)
+        return Path(path_value).resolve()
     except Exception:
-        return []
-
-    if not result.get("success", False):
-        return []
-
-    escapes = result.get("escapes", [])
-    return [
-        escape
-        for escape in escapes
-        if escape.get("escape_type") in TRADITIONAL_ESCAPE_TYPES
-    ]
+        return None
 
 
-def summarize_static_escapes(escapes: List[Dict[str, Any]]) -> str:
-    """Create compact text summary for vulnerability descriptions."""
-    if not escapes:
+def summarize_heap_allocations(
+    allocations: List[Dict[str, Any]],
+    total_growth_bytes: int,
+    function_name: str,
+) -> str:
+    """Create a compact heap-growth summary for bridge and vulnerability output."""
+    if total_growth_bytes <= 0 and not allocations:
         return ""
 
-    parts = []
-    for escape in escapes:
-        escape_type = escape.get("escape_type", "unknown")
-        variable_name = escape.get("variable_name", "<value>")
-        line = escape.get("line")
-        if isinstance(line, int) and line > 0:
-            parts.append(f"{escape_type}:{variable_name}@L{line}")
-        else:
-            parts.append(f"{escape_type}:{variable_name}")
+    fragments = [f"heap_growth:{total_growth_bytes}B"]
+    if function_name:
+        fragments.append(f"target:{function_name}")
 
-    return "; ".join(parts)
-
-
-def convert_static_escapes_to_protocol(escapes: List[Dict[str, Any]], source_file: str) -> Dict[str, List[Dict[str, Any]]]:
-    """Convert static escape findings to protocol-compatible object escape details."""
-    details = empty_escape_details()
-    for escape in escapes:
-        escape_type = escape.get("escape_type", "unknown")
-        variable_name = escape.get("variable_name", "<value>")
-        line = escape.get("line", 0)
-        column = escape.get("column", 0)
-        confidence = escape.get("confidence", "medium")
-
-        allocation_site = (
-            f"{source_file}:{line}:{column}"
-            if source_file and isinstance(line, int) and isinstance(column, int)
-            else source_file or "unknown"
+    for allocation in allocations[:3]:
+        fragments.append(
+            f"{Path(allocation['file']).name}@L{allocation['line']}+{allocation['size_diff']}B"
         )
 
+    return "; ".join(fragments)
+
+
+def convert_heap_allocations_to_protocol(
+    allocations: List[Dict[str, Any]],
+    source_file: str,
+    function_name: str,
+    total_growth_bytes: int,
+    peak_bytes: int,
+) -> Dict[str, Any]:
+    """Convert heap-growth observations to protocol-compatible escape details."""
+    details = empty_escape_details()
+
+    for allocation in allocations:
+        allocation_site = allocation["allocation_site"]
         details["escaping_references"].append(
             {
-                "variable_name": variable_name,
-                "object_type": "unknown",
+                "variable_name": function_name or "<heap>",
+                "object_type": "heap_allocation",
                 "allocation_site": allocation_site,
-                "escaped_via": escape_type,
+                "escaped_via": "heap",
             }
         )
-
         details["escape_paths"].append(
             {
-                "source": variable_name,
-                "destination": ESCAPE_DESTINATIONS.get(escape_type, "unknown"),
-                "escape_type": escape_type,
-                "confidence": confidence,
+                "source": function_name or "<heap>",
+                "destination": ESCAPE_DESTINATIONS["heap"],
+                "escape_type": "heap",
+                "confidence": "high" if allocation["size_diff"] >= 1024 else "medium",
             }
         )
 
+    details["heap_growth_bytes"] = total_growth_bytes
+    details["heap_peak_bytes"] = peak_bytes
+    details["source_file"] = source_file or "unknown"
+    details["heap_allocations"] = allocations
     return details
+
+
+def collect_heap_trace(
+    before_snapshot: tracemalloc.Snapshot,
+    after_snapshot: tracemalloc.Snapshot,
+    source_file: str,
+    function_name: str,
+    limit: int = 5,
+) -> Tuple[int, int, List[Dict[str, Any]]]:
+    """Compare snapshots and keep the positive allocation deltas for the target source."""
+    source_path = _normalize_path(source_file) if source_file else None
+    growth_candidates: List[Dict[str, Any]] = []
+    fallback_candidates: List[Dict[str, Any]] = []
+    total_growth_bytes = 0
+
+    for stat in after_snapshot.compare_to(before_snapshot, "lineno"):
+        if stat.size_diff <= 0:
+            continue
+
+        traceback_frame = stat.traceback[0]
+        frame_path = _normalize_path(traceback_frame.filename)
+        candidate = {
+            "file": traceback_frame.filename,
+            "line": traceback_frame.lineno,
+            "size_diff": int(stat.size_diff),
+            "count_diff": int(stat.count_diff),
+            "traceback": [f"{frame.filename}:{frame.lineno}" for frame in stat.traceback[:5]],
+            "allocation_site": f"{traceback_frame.filename}:{traceback_frame.lineno}",
+            "function_name": function_name,
+        }
+        fallback_candidates.append(candidate)
+
+        if source_path is None or frame_path == source_path:
+            growth_candidates.append(candidate)
+            total_growth_bytes += int(stat.size_diff)
+
+    if source_path is not None and not growth_candidates:
+        growth_candidates = fallback_candidates[:limit]
+        total_growth_bytes = sum(candidate["size_diff"] for candidate in growth_candidates)
+
+    return total_growth_bytes, len(growth_candidates), growth_candidates[:limit]
 
 
 def diagnose_bridge_error(error_msg: str):
@@ -329,30 +330,57 @@ def analyze(request: dict) -> dict:
     except Exception as e:
         return _error_response("python", f"Unexpected error loading target '{target}': {type(e).__name__}: {str(e)}", session_id, analysis_mode)
 
-    source_file = resolve_source_file(target, func)
-    static_escapes = run_traditional_static_escape_analysis(source_file, function_name)
-    static_escape_detected = bool(static_escapes)
-    static_escape_summary = summarize_static_escapes(static_escapes)
-    static_escape_details = convert_static_escapes_to_protocol(static_escapes, source_file)
-
     harness = PythonFunctionTestHarness(func, timeout=timeout_seconds, prefer_main_thread=True)
     all_results = []
-    for input_data in inputs:
-        for _ in range(repeat):
-            start_time = time.time()
-            result = harness.run_test(input_data)
-            execution_time_ms = int((time.time() - start_time) * 1000)
-            
-            all_results.append({
-                "input_data": input_data,
-                "success": result.success,
-                "crashed": result.crashed,
-                "output": result.output,
-                "error": result.error,
-                "execution_time_ms": execution_time_ms,
-                "escape_detected": bool(result.escape_detected or static_escape_detected),
-                "escape_details": static_escape_details if static_escape_detected else empty_escape_details(),
-            })
+    source_file = resolve_source_file(target, func)
+    tracemalloc.start(25)
+
+    try:
+        for input_data in inputs:
+            for _ in range(repeat):
+                gc.collect()
+                before_snapshot = tracemalloc.take_snapshot()
+
+                start_time = time.time()
+                result = harness.run_test(input_data)
+                execution_time_ms = int((time.time() - start_time) * 1000)
+
+                gc.collect()
+                after_snapshot = tracemalloc.take_snapshot()
+                current_bytes, peak_bytes = tracemalloc.get_traced_memory()
+                total_growth_bytes, matched_allocation_count, allocations = collect_heap_trace(
+                    before_snapshot,
+                    after_snapshot,
+                    source_file,
+                    function_name,
+                )
+                heap_summary = summarize_heap_allocations(allocations, total_growth_bytes, function_name)
+                heap_details = convert_heap_allocations_to_protocol(
+                    allocations,
+                    source_file,
+                    function_name,
+                    total_growth_bytes,
+                    int(peak_bytes),
+                )
+
+                escape_detected = bool(total_growth_bytes > 0 or matched_allocation_count > 0)
+
+                all_results.append({
+                    "input_data": input_data,
+                    "success": result.success,
+                    "crashed": result.crashed,
+                    "output": result.output,
+                    "error": result.error,
+                    "execution_time_ms": execution_time_ms,
+                    "escape_detected": escape_detected,
+                    "escape_details": heap_details if escape_detected else empty_escape_details(),
+                    "heap_growth_bytes": int(total_growth_bytes),
+                    "heap_current_bytes": int(current_bytes),
+                    "heap_peak_bytes": int(peak_bytes),
+                    "heap_summary": heap_summary,
+                })
+    finally:
+        tracemalloc.stop()
     
     # Analyze vulnerabilities
     detector = VulnerabilityDetector()
@@ -365,7 +393,7 @@ def analyze(request: dict) -> dict:
             self.crashed = data["crashed"]
             self.error = data["error"]
             self.escape_detected = data["escape_detected"]
-            self.escape_details = static_escape_summary
+            self.escape_details = data.get("heap_summary", "")
     
     result_proxies = [TestResultProxy(r) for r in all_results]
     analysis = detector.categorize_results(result_proxies)
@@ -375,7 +403,10 @@ def analyze(request: dict) -> dict:
             "vulnerability_type": v.vulnerability_type,
             "severity": v.severity,
             "description": v.error_message,
-            "escape_details": static_escape_details if static_escape_detected else empty_escape_details(),
+            "escape_details": next(
+                (r["escape_details"] for r in all_results if r["input_data"] == v.input and r["escape_detected"]),
+                empty_escape_details(),
+            ),
         }
         for v in analysis["vulnerabilities"]
     ]

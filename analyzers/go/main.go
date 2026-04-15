@@ -179,14 +179,9 @@ func analyze(request AnalyzeRequest) AnalyzeResponse {
 	}
 
 	sourcePath, functionName, parseErr := parseTarget(request.Target)
-	staticDetails := emptyEscapeDetails()
-	staticSummary := ""
-	if parseErr == nil {
-		staticFindings := runTraditionalStaticEscapeAnalysis(sourcePath, functionName)
-		staticDetails = staticFindingsToDetails(sourcePath, staticFindings)
-		staticSummary = summarizeStaticFindings(staticFindings)
-	}
-	staticDetected := len(staticDetails.EscapingReferences) > 0
+	_ = sourcePath
+	_ = functionName
+	_ = parseErr
 
 	// Load target function
 	targetFunc, err := loadTargetFunction(request.Target, request.TimeoutSeconds)
@@ -215,11 +210,7 @@ func analyze(request AnalyzeRequest) AnalyzeResponse {
 
 	for _, input := range inputs {
 		for i := 0; i < request.Repeat; i++ {
-			result := executeTest(targetFunc, input, request.TimeoutSeconds)
-			if staticDetected {
-				result.EscapeDetected = true
-				result.EscapeDetails = mergeEscapeDetails(result.EscapeDetails, staticDetails)
-			}
+			result := executeTest(targetFunc, request.Target, input, request.TimeoutSeconds)
 			response.Results = append(response.Results, result)
 
 			if result.Success {
@@ -238,14 +229,11 @@ func analyze(request AnalyzeRequest) AnalyzeResponse {
 				}
 
 				// Add vulnerability
-				staticCount := len(result.EscapeDetails.EscapingReferences)
 				goroutineCount := len(result.EscapeDetails.Goroutines)
+				heapSignal := findHeapSignal(result.EscapeDetails.Other, "heap_growth_bytes:")
 				description := fmt.Sprintf("%d goroutine(s) escaped", goroutineCount)
-				if staticCount > 0 {
-					description = fmt.Sprintf("%d static object escape(s) detected", staticCount)
-					if staticSummary != "" {
-						description = fmt.Sprintf("%s (%s)", description, staticSummary)
-					}
+				if heapSignal != "" {
+					description = fmt.Sprintf("Go heap escape signal detected (%s)", heapSignal)
 					if goroutineCount > 0 {
 						description = fmt.Sprintf("%s + %d goroutine leak(s)", description, goroutineCount)
 					}
@@ -253,7 +241,7 @@ func analyze(request AnalyzeRequest) AnalyzeResponse {
 
 				vuln := Vulnerability{
 					Input:             input,
-					VulnerabilityType: "concurrent_escape",
+					VulnerabilityType: "object_escape",
 					Severity:          "high",
 					Description:       description,
 					EscapeDetails:     result.EscapeDetails,
@@ -280,6 +268,15 @@ func analyze(request AnalyzeRequest) AnalyzeResponse {
 	}
 
 	return response
+}
+
+func findHeapSignal(entries []string, prefix string) string {
+	for _, entry := range entries {
+		if strings.HasPrefix(entry, prefix) {
+			return entry
+		}
+	}
+	return ""
 }
 
 func loadTargetFunction(target string, timeoutSeconds float64) (func(string) string, error) {
@@ -488,7 +485,7 @@ func cleanupTemporaryTargets() {
 	temporaryTargetDirs = nil
 }
 
-func executeTest(targetFunc func(string) string, input string, timeoutSeconds float64) ExecutionResult {
+func executeTest(targetFunc func(string) string, targetLabel string, input string, timeoutSeconds float64) ExecutionResult {
 	result := ExecutionResult{
 		InputData:      input,
 		Success:        false,
@@ -501,6 +498,7 @@ func executeTest(targetFunc func(string) string, input string, timeoutSeconds fl
 	baselineStackBuf := make([]byte, 1024*1024)
 	baselineStackLen := runtime.Stack(baselineStackBuf, true)
 	baselineGoroutineIDs := parseGoroutineIDs(baselineStackBuf[:baselineStackLen])
+	baselineHeap := captureHeapSnapshot()
 
 	startTime := time.Now()
 	done := make(chan struct{})
@@ -551,6 +549,15 @@ func executeTest(targetFunc func(string) string, input string, timeoutSeconds fl
 	currentStackBuf := make([]byte, 1024*1024)
 	currentStackLen := runtime.Stack(currentStackBuf, true)
 	currentGoroutineIDs := parseGoroutineIDs(currentStackBuf[:currentStackLen])
+	currentHeap := captureHeapSnapshot()
+	heapGrowthBytes := int64(0)
+	if currentHeap.HeapAllocBytes > baselineHeap.HeapAllocBytes {
+		heapGrowthBytes = currentHeap.HeapAllocBytes - baselineHeap.HeapAllocBytes
+	}
+	heapPeakBytes := currentHeap.HeapSysBytes
+	if baselineHeap.HeapSysBytes > heapPeakBytes {
+		heapPeakBytes = baselineHeap.HeapSysBytes
+	}
 
 	// Find new goroutines
 	escapedGoroutines := make([]GoroutineEscape, 0)
@@ -569,7 +576,51 @@ func executeTest(targetFunc func(string) string, input string, timeoutSeconds fl
 		result.EscapeDetails.Goroutines = escapedGoroutines
 	}
 
+	if heapGrowthBytes > 0 {
+		result.EscapeDetected = true
+		result.EscapeDetails.EscapingReferences = append(result.EscapeDetails.EscapingReferences, ObjectReference{
+			VariableName:   targetLabel,
+			ObjectType:     "heap_allocation_delta",
+			AllocationSite: targetLabel,
+			EscapedVia:     "heap",
+		})
+		confidence := "medium"
+		if heapGrowthBytes >= 1024 {
+			confidence = "high"
+		}
+		result.EscapeDetails.EscapePaths = append(result.EscapeDetails.EscapePaths, EscapePath{
+			Source:      targetLabel,
+			Destination: "heap_container",
+			EscapeType:  "heap",
+			Confidence:  confidence,
+		})
+		result.EscapeDetails.Other = append(result.EscapeDetails.Other,
+			fmt.Sprintf("heap_growth_bytes:%d", heapGrowthBytes),
+			fmt.Sprintf("heap_alloc_before_bytes:%d", baselineHeap.HeapAllocBytes),
+			fmt.Sprintf("heap_alloc_after_bytes:%d", currentHeap.HeapAllocBytes),
+			fmt.Sprintf("heap_peak_bytes:%d", heapPeakBytes),
+		)
+	}
+
 	return result
+}
+
+type heapSnapshot struct {
+	HeapAllocBytes int64
+	HeapSysBytes   int64
+}
+
+func captureHeapSnapshot() heapSnapshot {
+	runtime.GC()
+	time.Sleep(20 * time.Millisecond)
+
+	var mem runtime.MemStats
+	runtime.ReadMemStats(&mem)
+
+	return heapSnapshot{
+		HeapAllocBytes: int64(mem.HeapAlloc),
+		HeapSysBytes:   int64(mem.HeapSys),
+	}
 }
 
 func emptyEscapeDetails() EscapeDetails {

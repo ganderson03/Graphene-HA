@@ -1,23 +1,26 @@
-# Language Analyzers
+﻿# Language Analyzers
 
-This directory contains language bridges used by the Rust orchestrator.
-
-## Purpose
-
-Each bridge executes or parses language-specific targets and reports escape findings using a shared JSON protocol.
+This directory contains language bridge implementations used by the orchestrator.
 
 ## Structure
 
 ```text
 analyzers/
- python/
- nodejs/
- go/
- java/
- rust/
+  python/
+  nodejs/
+  go/
+  java/
+  rust/
 ```
 
-## Protocol Summary
+## Bridge Responsibilities
+
+- parse protocol request payloads
+- resolve and execute target functions or methods
+- collect runtime/static escape signals
+- emit normalized response payloads
+
+## Protocol Shape
 
 Request fields:
 
@@ -27,6 +30,7 @@ Request fields:
 - repeat
 - timeout_seconds
 - options
+- analysis_mode
 
 Response fields:
 
@@ -38,10 +42,10 @@ Response fields:
 - vulnerabilities
 - summary
 
-## Build Notes
+## Build Summary
 
 - Python: no build step
-- Node.js: runtime-dependent
+- Node.js: runtime execution via Node
 - Go: go build
-- Java: maven package
+- Java: mvn clean package
 - Rust: cargo build --release

@@ -2,7 +2,7 @@ use anyhow::{Result, Context};
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
 use crate::analyzer::AnalyzerRegistry;
-use crate::protocol::{AnalyzeRequest, AnalyzeResponse, AnalysisMode, ConfidenceLevel, EscapeType, ExecutionSummary, ExecutionResult};
+use crate::protocol::{AnalyzeRequest, AnalyzeResponse, AnalysisMode, ConfidenceLevel, EscapeType, ExecutionSummary, ExecutionResult, Vulnerability, EscapeDetails, ObjectReference, EscapePath};
 use crate::report::ReportGenerator;
 use crate::static_analyzer::StaticAnalyzerFactory;
 use std::collections::{HashMap, HashSet};
@@ -198,20 +198,80 @@ async fn run_static_analysis(
     info!("Analyzing source file: {}", source_file);
     let static_result = static_analyzer.analyze(target, &source_file)?;
     
+    // Convert static analysis results into execution results
+    let mut results = vec![];
+    let mut vulnerabilities = vec![];
+    let mut total_escapes = 0;
+    
+    if !static_result.escapes.is_empty() {
+        let mut escape_details = EscapeDetails {
+            escaping_references: vec![],
+            escape_paths: vec![],
+        };
+        
+        for escape in &static_result.escapes {
+            let reference = ObjectReference {
+                variable_name: escape.variable_name.clone(),
+                object_type: "unknown".to_string(),
+                allocation_site: format!("{}:{}", source_file, escape.location.line),
+                escaped_via: format!("{:?}", escape.escape_type),
+            };
+            escape_details.escaping_references.push(reference);
+            
+            let path = EscapePath {
+                source: escape.variable_name.clone(),
+                destination: format!("{:?}", escape.escape_type),
+                escape_type: format!("{:?}", escape.escape_type),
+                confidence: format!("{:?}", escape.confidence),
+            };
+            escape_details.escape_paths.push(path);
+        }
+        
+        let result = ExecutionResult {
+            input_data: "[static analysis]".to_string(),
+            success: true,
+            crashed: false,
+            output: format!("{} escape(s) detected", static_result.escapes.len()),
+            error: String::new(),
+            execution_time_ms: static_result.analysis_time_ms,
+            escape_detected: true,
+            escape_details,
+        };
+        results.push(result);
+        
+        total_escapes = static_result.escapes.len();
+        
+        for escape in &static_result.escapes {
+            vulnerabilities.push(Vulnerability {
+                input: "[static analysis]".to_string(),
+                vulnerability_type: "object_escape".to_string(),
+                severity: format!("{:?}", escape.confidence),
+                description: escape.reason.clone(),
+                escape_details: EscapeDetails {
+                    escaping_references: vec![],
+                    escape_paths: vec![],
+                },
+            });
+        }
+    }
+    
+    let total_tests = if results.is_empty() { 0 } else { 1 };
+    let successes = if !results.is_empty() { 1 } else { 0 };
+    
     Ok(AnalyzeResponse {
         session_id: Uuid::new_v4().to_string(),
         language: lang,
         analyzer_version: "1.0.0-static".to_string(),
         analysis_mode,
-        results: vec![],
-        vulnerabilities: vec![],
+        results,
+        vulnerabilities,
         summary: ExecutionSummary {
-            total_tests: 0,
-            successes: 0,
+            total_tests,
+            successes,
             crashes: 0,
             timeouts: 0,
-            escapes: 0,
-            genuine_escapes: 0,
+            escapes: total_escapes,
+            genuine_escapes: total_escapes,
             crash_rate: 0.0,
         },
         static_analysis: Some(static_result),
@@ -264,7 +324,11 @@ async fn run_dynamic_analysis(
 fn detect_language_from_target(target: &str) -> Result<String> {
     let target_head = target.split(':').next().unwrap_or(target);
 
-    if target_head.ends_with(".py") || target.contains("python") {
+    if target.contains("::") {
+        Ok("rust".to_string())
+    } else if target.contains(".jar:") {
+        Ok("java".to_string())
+    } else if target_head.ends_with(".py") || target.contains("python") {
         Ok("python".to_string())
     } else if target_head.ends_with(".java") {
         Ok("java".to_string())
@@ -309,27 +373,62 @@ fn resolve_source_file(target: &str) -> Result<String> {
     }
     
     if target.contains(':') {
+        let last_colon = target.rfind(':').unwrap_or(0);
+        if last_colon > 0 && last_colon < target.len() - 1 {
+            let before = &target[..last_colon];
+            if let Some(second_last) = before.rfind(':') {
+                let class_name = before[second_last + 1..].trim();
+                if !class_name.is_empty() && class_name.contains('.') {
+                    let class_rel = class_name.replace('.', "/") + ".java";
+                    let candidates = [
+                        PathBuf::from("tests/java/src/main/java").join(&class_rel),
+                        PathBuf::from("tests/java").join(&class_rel),
+                        PathBuf::from("src/main/java").join(&class_rel),
+                        PathBuf::from(&class_rel),
+                    ];
+                    for candidate in candidates {
+                        if candidate.exists() {
+                            return Ok(candidate.to_string_lossy().to_string());
+                        }
+                    }
+                }
+            }
+        }
+
         let file_or_module = target.split(':').next().unwrap_or(target);
         
         // Check if it's a file path
-        if file_or_module.contains('/') || file_or_module.contains('\\') || file_or_module.ends_with(".py") {
+        if file_or_module.contains('/')
+            || file_or_module.contains('\\')
+            || file_or_module.ends_with(".py")
+            || file_or_module.ends_with(".java")
+        {
             return Ok(file_or_module.to_string());
         }
         
         // It's a module path, convert to file path
-        let file_path = file_or_module.replace('.', "/") + ".py";
-        if PathBuf::from(&file_path).exists() {
-            return Ok(file_path);
+        let file_path = file_or_module.replace('.', "/");
+        let py_path = format!("{}.py", file_path);
+        let java_path = format!("{}.java", file_path);
+        if PathBuf::from(&py_path).exists() {
+            return Ok(py_path);
+        }
+        if PathBuf::from(&java_path).exists() {
+            return Ok(java_path);
         }
         
         // Try in tests directory
-        let test_path = format!("tests/{}", file_path);
-        if PathBuf::from(&test_path).exists() {
-            return Ok(test_path);
+        let test_py_path = format!("tests/{}", py_path);
+        if PathBuf::from(&test_py_path).exists() {
+            return Ok(test_py_path);
+        }
+        let test_java_path = format!("tests/java/src/main/java/{}", java_path);
+        if PathBuf::from(&test_java_path).exists() {
+            return Ok(test_java_path);
         }
         
         // Last resort: assume it's the module path as-is
-        Ok(file_path)
+        Ok(py_path)
     } else {
         Ok(target.to_string())
     }

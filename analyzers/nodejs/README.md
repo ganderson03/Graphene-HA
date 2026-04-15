@@ -1,6 +1,4 @@
-# Node.js Bridge
-
-Bridge for Node.js object/data escape analysis.
+﻿# Node.js Bridge
 
 ## Files
 
@@ -8,23 +6,16 @@ Bridge for Node.js object/data escape analysis.
 - static_analyzer.js
 - package.json
 
-## Capabilities
+## Functionality
 
-- Dynamic execution with async_hooks-backed runtime observations
-- Static source analysis for retention and escape patterns
+- resolves module/function targets
+- executes dynamic probes with timeout control
+- collects heap and async-resource escape signals
+- performs optional static pattern analysis
+- emits protocol-shaped results
 
-## Example (dynamic bridge request)
-
-```bash
-echo '{"session_id":"s1","target":"tests/nodejs/cases/case_001_cache_profile.js:case001CacheProfile","inputs":["sample"],"repeat":1,"timeout_seconds":5.0,"options":{}}' | node analyzer_bridge.js
-```
-
-## Static analyzer usage
+## Example Invocation
 
 ```bash
-node static_analyzer.js <source_file> <function_name>
+echo '{"session_id":"s1","target":"tests/nodejs/cases/case_001_cache_profile.js:case001CacheProfile","inputs":["sample"],"repeat":1,"timeout_seconds":5.0,"options":{},"analysis_mode":"dynamic"}' | node analyzer_bridge.js
 ```
-
-## Dependencies
-
-- Node.js 14+
