@@ -233,7 +233,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Run Graphene static analysis on sampled open-source projects")
     parser.add_argument("--per-project", type=int, default=10, help="Max sampled functions per project (default: 10; use 2 for quick test; 0 for all)")
     parser.add_argument("--timeout", type=float, default=5.0, help="Per-target timeout in seconds (default: 5)")
-    parser.add_argument("--log-dir", default="logs/oss_bench", help="Graphene log directory for OSS runs")
+    parser.add_argument("--log-dir", default="artifacts/logs/oss_bench", help="Graphene log directory for OSS runs")
     parser.add_argument("--report", default="benchmarks/oss_benchmark_report.csv", help="CSV report output path")
     parser.add_argument("--refresh", action="store_true", help="Refresh existing clones with git fetch/reset")
     parser.add_argument("--clone-only", action="store_true", help="Clone/sync repos and exit without analysis")

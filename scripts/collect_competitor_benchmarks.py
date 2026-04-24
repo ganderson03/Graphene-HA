@@ -3,7 +3,7 @@
 
 This script runs available competitor analyzers against Graphene test suites and
 writes session folders that match the `results.csv` schema consumed by
-`analyze_performance.py`.
+`scripts/analyze_performance.py`.
 """
 
 from __future__ import annotations
@@ -21,6 +21,48 @@ from pathlib import Path
 from typing import Iterable
 
 ROOT = Path(__file__).resolve().parent.parent
+
+CASE_GLOBS = {
+    "python": ROOT / "tests" / "python" / "cases",
+    "javascript": ROOT / "tests" / "nodejs" / "cases",
+    "go": ROOT / "tests" / "go" / "cases",
+    "rust": ROOT / "tests" / "rust" / "cases",
+}
+
+CASE_PATTERNS = {
+    "python": "case_*.py",
+    "javascript": "case_*.js",
+    "go": "case_*.go",
+    "rust": "case_*.rs",
+}
+
+PRIMARY_PATTERN_DETECTORS = {
+    "python": [
+        r"RETAINED_[A-Z_]+\s*\[",
+        r"RETAINED_[A-Z_]+\.append\(",
+        r"RETAINED_HANDLERS\.append\(",
+        r"def\s+handler\s*\(",
+    ],
+    "javascript": [
+        r"retained[A-Za-z]+\s*\.push\(",
+        r"retainedHandlers\s*\.push\(",
+        r"queueMicrotask\s*\(",
+        r"setTimeout\s*\(",
+    ],
+    "java": [
+        r"static\s+final\s+List<",
+        r"RETAINED_[A-Z_]+\.add\(",
+        r"HANDLERS\.add\(",
+        r"new\s+Thread\(",
+        r"CompletableFuture\.runAsync\(",
+    ],
+    "rust": [
+        r"static\s+RETAINED_[A-Z_]+",
+        r"RETAINED_[A-Z_]+\.lock\(\)\.unwrap\(\)\.push\(",
+        r"HANDLERS\.lock\(\)\.unwrap\(\)\.push\(",
+        r"std::thread::spawn\(",
+    ],
+}
 
 
 @dataclass
@@ -97,23 +139,10 @@ def write_session(log_root: Path, language_key: str, result: CaseResult) -> None
         )
 
 
-def collect_python_cases(limit: int) -> list[Path]:
-    cases = sorted((ROOT / "tests" / "python" / "cases").glob("case_*.py"))
-    return cases if limit <= 0 else cases[:limit]
-
-
-def collect_js_cases(limit: int) -> list[Path]:
-    cases = sorted((ROOT / "tests" / "nodejs" / "cases").glob("case_*.js"))
-    return cases if limit <= 0 else cases[:limit]
-
-
-def collect_go_cases(limit: int) -> list[Path]:
-    cases = sorted((ROOT / "tests" / "go" / "cases").glob("case_*.go"))
-    return cases if limit <= 0 else cases[:limit]
-
-
-def collect_rust_cases(limit: int) -> list[Path]:
-    cases = sorted((ROOT / "tests" / "rust" / "cases").glob("case_*.rs"))
+def collect_cases(language: str, limit: int) -> list[Path]:
+    base = CASE_GLOBS[language]
+    pattern = CASE_PATTERNS[language]
+    cases = sorted(base.glob(pattern))
     return cases if limit <= 0 else cases[:limit]
 
 
@@ -127,53 +156,20 @@ def _has_escape_markers(text: str, patterns: list[str]) -> bool:
     return any(re.search(pattern, text, flags=re.MULTILINE) for pattern in patterns)
 
 
-def run_python_escape_ast(py_cases: list[Path]) -> dict[Path, CaseResult]:
+def run_pattern_detector(cases: list[Path], patterns: list[str]) -> dict[Path, CaseResult]:
     results: dict[Path, CaseResult] = {}
-    if not py_cases:
+    if not cases:
         return results
 
-    patterns = [
-        r"RETAINED_[A-Z_]+\s*\[",
-        r"RETAINED_[A-Z_]+\.append\(",
-        r"RETAINED_HANDLERS\.append\(",
-        r"def\s+handler\s*\(",
-    ]
-
     start = time.perf_counter()
-    for p in py_cases:
+    for p in cases:
         text = p.read_text(encoding="utf-8", errors="replace")
         escaped = _has_escape_markers(text, patterns)
         target = str(p.relative_to(ROOT)).replace("\\", "/")
         results[p] = CaseResult(target, True, False, escaped, 0.0, "")
 
-    per_case_ms = ((time.perf_counter() - start) * 1000.0) / max(1, len(py_cases))
-    for p in py_cases:
-        results[p].execution_time_ms = per_case_ms
-
-    return results
-
-
-def run_node_escape_ast(js_cases: list[Path]) -> dict[Path, CaseResult]:
-    results: dict[Path, CaseResult] = {}
-    if not js_cases:
-        return results
-
-    patterns = [
-        r"retained[A-Za-z]+\s*\.push\(",
-        r"retainedHandlers\s*\.push\(",
-        r"queueMicrotask\s*\(",
-        r"setTimeout\s*\(",
-    ]
-
-    start = time.perf_counter()
-    for p in js_cases:
-        text = p.read_text(encoding="utf-8", errors="replace")
-        escaped = _has_escape_markers(text, patterns)
-        target = str(p.relative_to(ROOT)).replace("\\", "/")
-        results[p] = CaseResult(target, True, False, escaped, 0.0, "")
-
-    per_case_ms = ((time.perf_counter() - start) * 1000.0) / max(1, len(js_cases))
-    for p in js_cases:
+    per_case_ms = ((time.perf_counter() - start) * 1000.0) / max(1, len(cases))
+    for p in cases:
         results[p].execution_time_ms = per_case_ms
 
     return results
@@ -212,57 +208,6 @@ def run_go_native_escape(go_cases: list[Path]) -> dict[Path, CaseResult]:
     return results
 
 
-def run_java_escape_patterns(java_cases: list[Path]) -> dict[Path, CaseResult]:
-    results: dict[Path, CaseResult] = {}
-    if not java_cases:
-        return results
-
-    patterns = [
-        r"static\s+final\s+List<",
-        r"RETAINED_[A-Z_]+\.add\(",
-        r"HANDLERS\.add\(",
-        r"new\s+Thread\(",
-        r"CompletableFuture\.runAsync\(",
-    ]
-
-    start = time.perf_counter()
-    for p in java_cases:
-        text = p.read_text(encoding="utf-8", errors="replace")
-        escaped = _has_escape_markers(text, patterns)
-        target = str(p.relative_to(ROOT)).replace("\\", "/")
-        results[p] = CaseResult(target, True, False, escaped, 0.0, "")
-
-    per_case_ms = ((time.perf_counter() - start) * 1000.0) / max(1, len(java_cases))
-    for p in java_cases:
-        results[p].execution_time_ms = per_case_ms
-
-    return results
-
-
-def run_rust_escape_patterns(rust_cases: list[Path]) -> dict[Path, CaseResult]:
-    results: dict[Path, CaseResult] = {}
-    if not rust_cases:
-        return results
-
-    patterns = [
-        r"static\s+RETAINED_[A-Z_]+",
-        r"RETAINED_[A-Z_]+\.lock\(\)\.unwrap\(\)\.push\(",
-        r"HANDLERS\.lock\(\)\.unwrap\(\)\.push\(",
-        r"std::thread::spawn\(",
-    ]
-
-    start = time.perf_counter()
-    for p in rust_cases:
-        text = p.read_text(encoding="utf-8", errors="replace")
-        escaped = _has_escape_markers(text, patterns)
-        target = str(p.relative_to(ROOT)).replace("\\", "/")
-        results[p] = CaseResult(target, True, False, escaped, 0.0, "")
-
-    per_case_ms = ((time.perf_counter() - start) * 1000.0) / max(1, len(rust_cases))
-    for p in rust_cases:
-        results[p].execution_time_ms = per_case_ms
-
-    return results
 
 
 def run_crosslang_escape_profile(cases: list[Path], language: str, profile: str) -> dict[Path, CaseResult]:
@@ -388,7 +333,7 @@ def persist_results(log_root: Path, language_key: str, rows: Iterable[CaseResult
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Collect competitor benchmark logs")
-    parser.add_argument("--log-dir", default="logs/competitors", help="Output log root (default: logs/competitors)")
+    parser.add_argument("--log-dir", default="artifacts/logs/competitors", help="Output log root (default: artifacts/logs/competitors)")
     parser.add_argument("--limit", type=int, default=10, help="Cases per language; use 0 for all (default: 10)")
     parser.add_argument(
         "--clean",
@@ -402,11 +347,19 @@ def main() -> int:
         shutil.rmtree(log_root)
     log_root.mkdir(parents=True, exist_ok=True)
 
-    py_cases = collect_python_cases(args.limit)
-    js_cases = collect_js_cases(args.limit)
-    go_cases = collect_go_cases(args.limit)
+    py_cases = collect_cases("python", args.limit)
+    js_cases = collect_cases("javascript", args.limit)
+    go_cases = collect_cases("go", args.limit)
     java_cases = collect_java_cases(args.limit)
-    rust_cases = collect_rust_cases(args.limit)
+    rust_cases = collect_cases("rust", args.limit)
+
+    cases_by_language = {
+        "python": py_cases,
+        "javascript": js_cases,
+        "go": go_cases,
+        "java": java_cases,
+        "rust": rust_cases,
+    }
 
     print("Collecting competitor benchmark data...")
     print(f"  Python cases: {len(py_cases)}")
@@ -415,29 +368,11 @@ def main() -> int:
     print(f"  Java cases: {len(java_cases)}")
     print(f"  Rust cases: {len(rust_cases)}")
 
-    py_rows = run_python_escape_ast(py_cases)
-    js_rows = run_node_escape_ast(js_cases)
+    py_rows = run_pattern_detector(py_cases, PRIMARY_PATTERN_DETECTORS["python"])
+    js_rows = run_pattern_detector(js_cases, PRIMARY_PATTERN_DETECTORS["javascript"])
     go_rows = run_go_native_escape(go_cases)
-    java_rows = run_java_escape_patterns(java_cases)
-    rust_rows = run_rust_escape_patterns(rust_cases)
-
-    mea2h_py_rows = run_crosslang_escape_profile(py_cases, "python", "mea2_heuristic")
-    mea2h_js_rows = run_crosslang_escape_profile(js_cases, "javascript", "mea2_heuristic")
-    mea2h_go_rows = run_crosslang_escape_profile(go_cases, "go", "mea2_heuristic")
-    mea2h_java_rows = run_crosslang_escape_profile(java_cases, "java", "mea2_heuristic")
-    mea2h_rust_rows = run_crosslang_escape_profile(rust_cases, "rust", "mea2_heuristic")
-
-    retained_py_rows = run_crosslang_escape_profile(py_cases, "python", "retained_state_rules")
-    retained_js_rows = run_crosslang_escape_profile(js_cases, "javascript", "retained_state_rules")
-    retained_go_rows = run_crosslang_escape_profile(go_cases, "go", "retained_state_rules")
-    retained_java_rows = run_crosslang_escape_profile(java_cases, "java", "retained_state_rules")
-    retained_rust_rows = run_crosslang_escape_profile(rust_cases, "rust", "retained_state_rules")
-
-    async_py_rows = run_crosslang_escape_profile(py_cases, "python", "async_handoff_rules")
-    async_js_rows = run_crosslang_escape_profile(js_cases, "javascript", "async_handoff_rules")
-    async_go_rows = run_crosslang_escape_profile(go_cases, "go", "async_handoff_rules")
-    async_java_rows = run_crosslang_escape_profile(java_cases, "java", "async_handoff_rules")
-    async_rust_rows = run_crosslang_escape_profile(rust_cases, "rust", "async_handoff_rules")
+    java_rows = run_pattern_detector(java_cases, PRIMARY_PATTERN_DETECTORS["java"])
+    rust_rows = run_pattern_detector(rust_cases, PRIMARY_PATTERN_DETECTORS["rust"])
 
     persist_results(log_root, "python_escape_ast__python", py_rows.values())
     persist_results(log_root, "node_escape_ast__javascript", js_rows.values())
@@ -445,23 +380,11 @@ def main() -> int:
     persist_results(log_root, "java_escape_patterns__java", java_rows.values())
     persist_results(log_root, "rust_escape_patterns__rust", rust_rows.values())
 
-    persist_results(log_root, "mea2_heuristic__python", mea2h_py_rows.values())
-    persist_results(log_root, "mea2_heuristic__javascript", mea2h_js_rows.values())
-    persist_results(log_root, "mea2_heuristic__go", mea2h_go_rows.values())
-    persist_results(log_root, "mea2_heuristic__java", mea2h_java_rows.values())
-    persist_results(log_root, "mea2_heuristic__rust", mea2h_rust_rows.values())
-
-    persist_results(log_root, "retained_state_rules__python", retained_py_rows.values())
-    persist_results(log_root, "retained_state_rules__javascript", retained_js_rows.values())
-    persist_results(log_root, "retained_state_rules__go", retained_go_rows.values())
-    persist_results(log_root, "retained_state_rules__java", retained_java_rows.values())
-    persist_results(log_root, "retained_state_rules__rust", retained_rust_rows.values())
-
-    persist_results(log_root, "async_handoff_rules__python", async_py_rows.values())
-    persist_results(log_root, "async_handoff_rules__javascript", async_js_rows.values())
-    persist_results(log_root, "async_handoff_rules__go", async_go_rows.values())
-    persist_results(log_root, "async_handoff_rules__java", async_java_rows.values())
-    persist_results(log_root, "async_handoff_rules__rust", async_rust_rows.values())
+    profiles = ["mea2_heuristic", "retained_state_rules", "async_handoff_rules"]
+    for profile in profiles:
+        for language, language_cases in cases_by_language.items():
+            rows = run_crosslang_escape_profile(language_cases, language, profile)
+            persist_results(log_root, f"{profile}__{language}", rows.values())
 
     print("\nDone. Competitor logs written to:", log_root)
     return 0

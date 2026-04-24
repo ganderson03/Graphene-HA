@@ -51,5 +51,5 @@ INPUT_PATTERNS = [
 # Default configuration values
 DEFAULT_REPEAT_COUNT = 3
 DEFAULT_TIMEOUT = 5.0
-DEFAULT_LOG_DIR = "logs"
+DEFAULT_LOG_DIR = "artifacts/logs"
 DEFAULT_TEST_DIR = "tests"

@@ -11,7 +11,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from analyze_performance import PerformanceAnalyzer  # noqa: E402
+from scripts.analyze_performance import PerformanceAnalyzer  # noqa: E402
 
 
 def copy_logs_with_prefix(src_root: Path, dst_root: Path, prefix: str) -> None:
@@ -30,12 +30,12 @@ def copy_logs_with_prefix(src_root: Path, dst_root: Path, prefix: str) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Build Graphene vs competitor dashboard")
-    parser.add_argument("--graphene-logs", default="logs/graphene", help="Graphene logs dir (default: logs/graphene)")
-    parser.add_argument("--graphene-static-logs", default="logs/graphene_static", help="Graphene static-only logs dir (default: logs/graphene_static)")
-    parser.add_argument("--graphene-dynamic-logs", default="logs/graphene_dynamic", help="Graphene dynamic-only logs dir (default: logs/graphene_dynamic)")
-    parser.add_argument("--competitor-logs", default="logs/competitors", help="Competitor logs dir (default: logs/competitors)")
-    parser.add_argument("--oss-logs", default="logs/oss_bench", help="OSS Graphene logs dir (default: logs/oss_bench)")
-    parser.add_argument("--combined-logs", default="logs/comparison", help="Temporary combined logs dir (default: logs/comparison)")
+    parser.add_argument("--graphene-logs", default="artifacts/logs/graphene", help="Graphene logs dir (default: artifacts/logs/graphene)")
+    parser.add_argument("--graphene-static-logs", default="artifacts/logs/graphene_static", help="Graphene static-only logs dir (default: artifacts/logs/graphene_static)")
+    parser.add_argument("--graphene-dynamic-logs", default="artifacts/logs/graphene_dynamic", help="Graphene dynamic-only logs dir (default: artifacts/logs/graphene_dynamic)")
+    parser.add_argument("--competitor-logs", default="artifacts/logs/competitors", help="Competitor logs dir (default: artifacts/logs/competitors)")
+    parser.add_argument("--oss-logs", default="artifacts/logs/oss_bench", help="OSS Graphene logs dir (default: artifacts/logs/oss_bench)")
+    parser.add_argument("--combined-logs", default="artifacts/logs/comparison", help="Temporary combined logs dir (default: artifacts/logs/comparison)")
     parser.add_argument("--output-dir", default="comparison_dashboard", help="Dashboard output folder (default: comparison_dashboard)")
     args = parser.parse_args()
 

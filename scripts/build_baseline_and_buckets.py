@@ -24,7 +24,7 @@ import pandas as pd
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
-from analyze_performance import PerformanceAnalyzer
+from scripts.analyze_performance import PerformanceAnalyzer
 
 
 def _base_language(language_key: str) -> str:
@@ -137,8 +137,6 @@ def build_reports(logs_dir: Path, out_dir: Path) -> None:
             continue
         g_row = g.iloc[0]
 
-        competitors = lang_metrics[lang_metrics["tool"].isin({"competitor", "oss"}) == False]
-        # competitor tool names are their analyzer ids, not "competitor" literal.
         competitors = lang_metrics[lang_metrics["language_key"].str.startswith("competitor__")]
         if competitors.empty:
             best_name = ""
@@ -275,7 +273,7 @@ def build_reports(logs_dir: Path, out_dir: Path) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Build baseline leaderboard and Graphene miss buckets")
-    parser.add_argument("--logs-dir", default="logs/comparison", help="Combined logs directory")
+    parser.add_argument("--logs-dir", default="artifacts/logs/comparison", help="Combined logs directory")
     parser.add_argument("--out-dir", default="comparison_dashboard", help="Output directory")
     args = parser.parse_args()
 

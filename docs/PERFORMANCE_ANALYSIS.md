@@ -21,7 +21,7 @@ Typical per-row fields:
 
 ## Primary Utility
 
-- analyze_performance.py
+- scripts/analyze_performance.py
 
 Functionality:
 
@@ -43,19 +43,19 @@ Functionality:
 ## Run
 
 ```bash
-python analyze_performance.py
+python scripts/analyze_performance.py
 ```
 
 or
 
 ```bash
-uv run python analyze_performance.py
+uv run python scripts/analyze_performance.py
 ```
 
 ## Expected Log Layout
 
 ```text
-logs/
+artifacts/logs/
   <language>/
     <session_id>/
       results.csv

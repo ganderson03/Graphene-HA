@@ -3,7 +3,7 @@ from pathlib import Path
 import re
 
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parents[1]
 PYTHON_CASES_DIR = ROOT / "tests" / "python" / "cases"
 NODE_CASES_DIR = ROOT / "tests" / "nodejs" / "cases"
 CASE_RE = re.compile(r"^case_(\d{3})_(.+)\.py$")

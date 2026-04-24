@@ -42,7 +42,7 @@ class PerformanceAnalyzer:
         self.logs_dir = Path(logs_dir)
         self.data = []
         self.df = None
-        self.repo_root = Path(__file__).resolve().parent
+        self.repo_root = Path(__file__).resolve().parents[1]
         self._expected_cache: Dict[Tuple[str, str], Optional[bool]] = {}
         sns.set_theme(style="whitegrid")
         plt.rcParams["figure.figsize"] = (14, 8)
@@ -205,14 +205,7 @@ class PerformanceAnalyzer:
                 raw = parts[-1]
 
         normalized = raw.replace("_", "-")
-        aliases = {
-            "cargo-audit": "cargo-audit",
-            "spotbugs": "spotbugs",
-            "bandit": "bandit",
-            "gosec": "gosec",
-            "semgrep": "semgrep",
-        }
-        return aliases.get(normalized, normalized)
+        return normalized
 
     def _style_x_labels(self, ax) -> None:
         """Apply readable spacing for dense category axes."""
@@ -395,7 +388,7 @@ class PerformanceAnalyzer:
             <div class="empty">
                 <strong>No analysis data found.</strong>
                 <p class="muted">The dashboard was rebuilt from the current logs folder and found no <code>results.csv</code> files.</p>
-                <p class="muted">Run new analyses, then rerun <code>python analyze_performance.py</code>.</p>
+                <p class="muted">Run new analyses, then rerun <code>python scripts/analyze_performance.py</code>.</p>
             </div>
         </div>
     </div>

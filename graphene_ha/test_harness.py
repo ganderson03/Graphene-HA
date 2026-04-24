@@ -1,15 +1,13 @@
+import io
+import multiprocessing
 import os
 import pickle
 import queue
-import time
-import multiprocessing
-import asyncio
-import sys
 import threading
-import io
+import time
 from contextlib import redirect_stdout, redirect_stderr
 from dataclasses import dataclass
-from pathlib import Path
+from typing import Any, Dict
 
 
 def _invoke_target(func, input_data, fixed_kwargs):
@@ -21,6 +19,17 @@ def _invoke_target(func, input_data, fixed_kwargs):
             # Fallback to legacy single-input call shape when target expects one arg.
             return func(input_data, **fixed_kwargs)
     return func(input_data, **fixed_kwargs)
+
+
+def _capture_invocation(func, input_data, fixed_kwargs):
+    """Execute target and capture stdout/stderr along with return type metadata."""
+    buffer = io.StringIO()
+    with redirect_stdout(buffer), redirect_stderr(buffer):
+        returned_value = _invoke_target(func, input_data, fixed_kwargs)
+    captured = buffer.getvalue()
+    output = captured if captured else str(returned_value)
+    return output, returned_value
+
 
 @dataclass
 class TestResult:
@@ -52,6 +61,35 @@ class PythonFunctionTestHarness:
         self.prefer_thread = prefer_thread
         self.prefer_main_thread = prefer_main_thread
         self.fixed_kwargs = fixed_kwargs
+
+    def _make_result(
+        self,
+        input_data,
+        *,
+        success,
+        crashed,
+        output="",
+        error="",
+        return_code=0,
+        anomaly=False,
+        escape_detected=False,
+        escape_details="",
+        returned_value_type="",
+        raised_exception=False,
+    ):
+        return TestResult(
+            input_data=input_data,
+            success=success,
+            crashed=crashed,
+            output=output,
+            error=error,
+            return_code=return_code,
+            anomaly=anomaly,
+            escape_detected=escape_detected,
+            escape_details=escape_details,
+            returned_value_type=returned_value_type,
+            raised_exception=raised_exception,
+        )
 
     def run_test(self, input_data):
         """Run test and capture dynamic information for escape verification."""
@@ -90,11 +128,7 @@ class PythonFunctionTestHarness:
 
         def worker(func, input_data, fixed_kwargs, result_queue):
             try:
-                buffer = io.StringIO()
-                with redirect_stdout(buffer), redirect_stderr(buffer):
-                    returned_value = _invoke_target(func, input_data, fixed_kwargs)
-                captured = buffer.getvalue()
-                output = captured if captured else str(returned_value)
+                output, returned_value = _capture_invocation(func, input_data, fixed_kwargs)
                 error = ""
                 crashed = False
                 returned_type = type(returned_value).__name__
@@ -121,73 +155,62 @@ class PythonFunctionTestHarness:
             proc.terminate()
             proc.join()
             time.sleep(0.2)
-            return TestResult(
-                input_data=input_data,
+            return self._make_result(
+                input_data,
                 success=False,
                 crashed=True,
-                output="",
                 error=f"Process timeout after {self.timeout}s",
                 return_code=-1,
                 anomaly=True,
-                escape_detected=False,
-                escape_details="",
-                returned_value_type="timeout"
+                returned_value_type="timeout",
             )
 
         time.sleep(0.1)
         try:
             payload = result_queue.get_nowait()
         except queue.Empty:
-            return TestResult(
-                input_data=input_data,
+            return self._make_result(
+                input_data,
                 success=False,
                 crashed=True,
-                output="",
-                error=f"Child process did not return result",
+                error="Child process did not return result",
                 return_code=-1,
                 anomaly=True,
-                escape_detected=False,
-                escape_details="",
-                returned_value_type="no_response"
+                returned_value_type="no_response",
             )
 
         if payload.get("crashed"):
-            return TestResult(
-                input_data=input_data,
+            return self._make_result(
+                input_data,
                 success=False,
                 crashed=True,
-                output="",
                 error=payload.get("error", ""),
                 return_code=-1,
-                escape_detected=False,
-                escape_details="",
                 returned_value_type=payload.get("returned_type", "exception"),
-                raised_exception=True
+                raised_exception=True,
             )
 
-        return TestResult(
-            input_data=input_data,
+        return self._make_result(
+            input_data,
             success=True,
             crashed=False,
             output=payload.get("output", ""),
-            error="",
-            return_code=0,
-            escape_detected=False,
-            escape_details="",
-            returned_value_type=payload.get("returned_type", "")
+            returned_value_type=payload.get("returned_type", ""),
         )
 
     def _run_in_thread(self, input_data):
         """Run function in separate thread."""
-        result = {"output": None, "error": None, "completed": False, "returned_type": ""}
+        result: Dict[str, Any] = {
+            "output": None,
+            "error": None,
+            "completed": False,
+            "returned_type": "",
+        }
 
         def run_with_timeout():
             try:
-                buffer = io.StringIO()
-                with redirect_stdout(buffer), redirect_stderr(buffer):
-                    returned_value = _invoke_target(self.func, input_data, self.fixed_kwargs)
-                captured = buffer.getvalue()
-                result["output"] = captured if captured else str(returned_value)
+                output, returned_value = _capture_invocation(self.func, input_data, self.fixed_kwargs)
+                result["output"] = output
                 result["returned_type"] = self._analyze_return_type(returned_value)
                 result["completed"] = True
             except Exception as e:
@@ -202,68 +225,50 @@ class PythonFunctionTestHarness:
 
             if not result["completed"]:
                 time.sleep(0.1)
-                return TestResult(
-                    input_data=input_data,
+                return self._make_result(
+                    input_data,
                     success=False,
                     crashed=True,
-                    output="",
                     error=f"Thread timeout after {self.timeout}s",
                     return_code=-1,
                     anomaly=True,
-                    escape_detected=False,
-                    escape_details="",
-                    returned_value_type="timeout"
+                    returned_value_type="timeout",
                 )
 
             if result["error"]:
-                return TestResult(
-                    input_data=input_data,
+                return self._make_result(
+                    input_data,
                     success=False,
                     crashed=True,
-                    output="",
                     error=result["error"],
                     return_code=-1,
-                    escape_detected=False,
-                    escape_details="",
                     returned_value_type=result.get("returned_type", "exception"),
-                    raised_exception=True
+                    raised_exception=True,
                 )
 
-            return TestResult(
-                input_data=input_data,
+            return self._make_result(
+                input_data,
                 success=True,
                 crashed=False,
                 output=result["output"] or "",
-                error="",
-                return_code=0,
-                escape_detected=False,
-                escape_details="",
-                returned_value_type=result.get("returned_type", "")
+                returned_value_type=result.get("returned_type", ""),
             )
         except Exception as e:
-            import traceback
-            return TestResult(
-                input_data=input_data,
+            return self._make_result(
+                input_data,
                 success=False,
                 crashed=True,
-                output="",
                 error=f"{type(e).__name__}: {str(e)}",
                 return_code=-1,
-                escape_detected=False,
-                escape_details="",
                 returned_value_type="exception",
-                raised_exception=True
+                raised_exception=True,
             )
 
     def _run_in_main_thread(self, input_data):
         """Run function in main thread."""
         start = time.time()
         try:
-            buffer = io.StringIO()
-            with redirect_stdout(buffer), redirect_stderr(buffer):
-                returned_value = _invoke_target(self.func, input_data, self.fixed_kwargs)
-            captured = buffer.getvalue()
-            output = captured if captured else str(returned_value)
+            output, returned_value = _capture_invocation(self.func, input_data, self.fixed_kwargs)
             error = ""
             crashed = False
             returned_type = self._analyze_return_type(returned_value)
@@ -276,42 +281,32 @@ class PythonFunctionTestHarness:
         elapsed = time.time() - start
 
         if elapsed > self.timeout:
-            return TestResult(
-                input_data=input_data,
+            return self._make_result(
+                input_data,
                 success=False,
                 crashed=True,
-                output="",
                 error="Timeout exceeded",
                 return_code=-1,
                 anomaly=True,
-                escape_detected=False,
-                escape_details="",
-                returned_value_type="timeout"
+                returned_value_type="timeout",
             )
 
         if crashed:
-            return TestResult(
-                input_data=input_data,
+            return self._make_result(
+                input_data,
                 success=False,
                 crashed=True,
-                output="",
                 error=error,
                 return_code=-1,
-                escape_detected=False,
-                escape_details="",
                 returned_value_type=returned_type,
-                raised_exception=True
+                raised_exception=True,
             )
 
-        return TestResult(
-            input_data=input_data,
+        return self._make_result(
+            input_data,
             success=True,
             crashed=False,
             output=output,
-            error="",
-            return_code=0,
-            escape_detected=False,
-            escape_details="",
-            returned_value_type=returned_type
+            returned_value_type=returned_type,
         )
 

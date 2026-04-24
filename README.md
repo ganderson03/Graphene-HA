@@ -42,7 +42,7 @@ uv run graphene list --detailed
 ### Clear logs
 
 ```bash
-uv run graphene clear --log-dir logs
+uv run graphene clear --log-dir artifacts/logs
 ```
 
 ## Target Formats
@@ -60,9 +60,9 @@ Graphene-HA/
   src/                  Rust orchestrator and shared protocol handling
   analyzers/            Language bridges
   tests/                Cross-language case suites
-  graphene_ha/          Python CLI wrapper
-  scripts/              Utility scripts for batch runs and reporting
-  comparison_dashboard/ Generated comparison dashboard assets
+  graphene_ha/          Python CLI wrapper package
+  scripts/              Operational, benchmark, and reporting utilities
+  docs/                 Canonical documentation (current source of truth)
 ```
 
 ## Outputs
@@ -75,6 +75,6 @@ Runs produce session artifacts per language/session:
 
 ## Related Documentation
 
-- analyzers/README.md
-- tests/README.md
-- PERFORMANCE_ANALYSIS.md
+- docs/README.md
+- docs/PERFORMANCE_ANALYSIS.md
+- docs/REPO_RESTRUCTURE_PROPOSAL.md

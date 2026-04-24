@@ -25,14 +25,14 @@ def expected_escape(file_path: Path) -> bool:
 
 
 def sample_cases(limit: int = 20):
-    root = Path(__file__).resolve().parent
+    root = Path(__file__).resolve().parents[1]
     cases = sorted((root / "tests" / "python" / "cases").glob("case_*.py"))
     for file_path in cases[:limit]:
         yield file_path
 
 
 def main():
-    root = Path(__file__).resolve().parent
+    root = Path(__file__).resolve().parents[1]
     analyze_file = load_analyze_file(root)
     results = defaultdict(lambda: {"pass": 0, "fail": 0})
 

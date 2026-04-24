@@ -3,10 +3,11 @@
 
 import re
 from pathlib import Path
-from collections import defaultdict
+
+ROOT = Path(__file__).resolve().parents[1]
 
 # Load all Java static test results
-logs_dir = Path('logs/java_static_test/java')
+logs_dir = ROOT / 'logs' / 'java_static_test' / 'java'
 stats = {'tp': 0, 'tn': 0, 'fp': 0, 'fn': 0}
 
 for session_dir in sorted(logs_dir.glob('session_*')):
@@ -27,7 +28,7 @@ for session_dir in sorted(logs_dir.glob('session_*')):
     case_name = 'Case' + match.group(1)
     
     # Check if it's SAFE by looking for 'SAFE:' in the case code
-    case_file = Path('tests/java/src/main/java/com/escape/tests/cases') / (case_name + '.java')
+    case_file = ROOT / 'tests' / 'java' / 'src' / 'main' / 'java' / 'com' / 'escape' / 'tests' / 'cases' / (case_name + '.java')
     is_safe = case_file.exists() and 'SAFE:' in case_file.read_text()
     
     # Check if static detected escape (looking for "Total Escapes | 0")

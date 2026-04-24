@@ -22,6 +22,20 @@ def run_step(cmd: list[str], title: str) -> int:
     return proc.returncode
 
 
+def _graphene_run_all_cmd(py_exe: str, generate: int, log_dir: str, analysis_mode: str) -> list[str]:
+    return [
+        py_exe,
+        str(ROOT / "graphene_ha" / "cli.py"),
+        "run-all",
+        "--generate",
+        str(generate),
+        "--log-dir",
+        log_dir,
+        "--analysis-mode",
+        analysis_mode,
+    ]
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Run Graphene + native and heuristic escape detectors and generate comparison HTML dashboard"
@@ -35,12 +49,12 @@ def main() -> int:
         default="benchmarks/oss_benchmark_report.csv",
         help="OSS benchmark CSV report path (default: benchmarks/oss_benchmark_report.csv)",
     )
-    parser.add_argument("--graphene-logs", default="logs/graphene", help="Graphene BOTH-mode log directory (default: logs/graphene)")
-    parser.add_argument("--graphene-static-logs", default="logs/graphene_static", help="Graphene STATIC-mode log directory (default: logs/graphene_static)")
-    parser.add_argument("--graphene-dynamic-logs", default="logs/graphene_dynamic", help="Graphene DYNAMIC-mode log directory (default: logs/graphene_dynamic)")
-    parser.add_argument("--competitor-logs", default="logs/competitors_escape", help="Competitor log directory (default: logs/competitors_escape)")
-    parser.add_argument("--oss-logs", default="logs/oss_bench", help="OSS Graphene log directory (default: logs/oss_bench)")
-    parser.add_argument("--combined-logs", default="logs/comparison", help="Combined log directory (default: logs/comparison)")
+    parser.add_argument("--graphene-logs", default="artifacts/logs/graphene", help="Graphene BOTH-mode log directory (default: artifacts/logs/graphene)")
+    parser.add_argument("--graphene-static-logs", default="artifacts/logs/graphene_static", help="Graphene STATIC-mode log directory (default: artifacts/logs/graphene_static)")
+    parser.add_argument("--graphene-dynamic-logs", default="artifacts/logs/graphene_dynamic", help="Graphene DYNAMIC-mode log directory (default: artifacts/logs/graphene_dynamic)")
+    parser.add_argument("--competitor-logs", default="artifacts/logs/competitors_escape", help="Competitor log directory (default: artifacts/logs/competitors_escape)")
+    parser.add_argument("--oss-logs", default="artifacts/logs/oss_bench", help="OSS Graphene log directory (default: artifacts/logs/oss_bench)")
+    parser.add_argument("--combined-logs", default="artifacts/logs/comparison", help="Combined log directory (default: artifacts/logs/comparison)")
     parser.add_argument("--output-dir", default="comparison_dashboard", help="Dashboard output directory (default: comparison_dashboard)")
     parser.add_argument("--skip-oss", action="store_true", help="Skip OSS benchmark sampling step")
     parser.add_argument(
@@ -75,41 +89,9 @@ def main() -> int:
         if oss_report_path.exists():
             oss_report_path.unlink()
 
-    graphene_cmd = [
-        py,
-        str(ROOT / "graphene_ha" / "cli.py"),
-        "run-all",
-        "--generate",
-        str(args.generate),
-        "--log-dir",
-        args.graphene_logs,
-        "--analysis-mode",
-        "both",
-    ]
-
-    graphene_static_cmd = [
-        py,
-        str(ROOT / "graphene_ha" / "cli.py"),
-        "run-all",
-        "--generate",
-        str(args.generate),
-        "--log-dir",
-        args.graphene_static_logs,
-        "--analysis-mode",
-        "static",
-    ]
-
-    graphene_dynamic_cmd = [
-        py,
-        str(ROOT / "graphene_ha" / "cli.py"),
-        "run-all",
-        "--generate",
-        str(args.generate),
-        "--log-dir",
-        args.graphene_dynamic_logs,
-        "--analysis-mode",
-        "dynamic",
-    ]
+    graphene_cmd = _graphene_run_all_cmd(py, args.generate, args.graphene_logs, "both")
+    graphene_static_cmd = _graphene_run_all_cmd(py, args.generate, args.graphene_static_logs, "static")
+    graphene_dynamic_cmd = _graphene_run_all_cmd(py, args.generate, args.graphene_dynamic_logs, "dynamic")
 
     competitors_cmd = [
         py,

@@ -1,6 +1,6 @@
 globs:
   - "**/*.md"
-  - "!logs/**"
+  - "!artifacts/logs/**"
   - "!tests/**"
   - "!benchmarks/oss_sources/**"
   - "!analyzers/java/.github/java-upgrade/**"

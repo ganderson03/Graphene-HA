@@ -39,7 +39,7 @@ def category_from_case(file_path: Path) -> str:
 
 
 def main():
-    root = Path(__file__).resolve().parent
+    root = Path(__file__).resolve().parents[1]
     analyze_file = load_analyze_file(root)
     cases = all_cases(root)
 
